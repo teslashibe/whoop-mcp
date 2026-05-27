@@ -27,7 +27,7 @@
   <img src="assets/demo.png" alt="Claude Desktop using whoop-mcp to check today's recovery — 73% green with HRV, resting HR, and sleep performance breakdown" width="820">
 </p>
 
-48 tools, structured zod-validated outputs, bundled catalogs (372 exercises, 308 behaviors, 203 sports), write-safety harness, automatic Cognito token refresh, session-scoped catalog gate. TypeScript 6, Node 24, 127 tests.
+48 tools, structured zod-validated outputs, bundled catalogs (372 exercises, 308 behaviors, 203 sports), write-safety harness, automatic Cognito token refresh, session-scoped catalog gate. TypeScript 6, Node 24, 154 tests.
 
 > *Note: this works through Whoop's private iOS API rather than the public OAuth API. That isn't what Whoop's terms allow — see the [FAQ](#faq) if you want the full picture before installing.*
 

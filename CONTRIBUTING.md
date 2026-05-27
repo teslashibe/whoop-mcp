@@ -43,7 +43,7 @@ npm install
 cp .env.example .env
 # edit .env with your Whoop creds
 npm run cognito-bootstrap
-npm test           # 127 tests, <1s
+npm test           # 154 tests, <1s
 npm run typecheck
 npm run build
 
@@ -95,7 +95,7 @@ Recent precedents to read:
 
 ## Testing
 
-- **`npm test`** — 127 unit tests in <1s. Fixture-driven for projections; integration-style for the HTTP transport (`tests/whoop/http_auth.test.ts` spins up a real `http.Server` and hits it with `fetch`).
+- **`npm test`** — 154 unit tests in <1s. Fixture-driven for projections; integration-style for the HTTP transport (`tests/whoop/http_auth.test.ts` spins up a real `http.Server` and hits it with `fetch`).
 - **Live-API tests live in a separate `whoop-testing` archive.** They require a dummy account and aren't safe to expose to first-time users. If you want to add or run them, ask Brian.
 - When fixing a projection, update its fixture in `tests/fixtures/` and the corresponding test in `tests/projections/round{1,2,3}.test.ts`.
 - When changing the HTTP transport (`src/server-http.ts`) or auth model, add coverage to `tests/whoop/http_auth.test.ts`. The pattern is: boot a real server on an ephemeral port with a stub `WhoopClient`, then assert with `fetch()`.
