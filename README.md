@@ -111,7 +111,7 @@ Want to host it on a remote URL so you can use it from multiple devices? See [Re
 16. [Disclaimers](#disclaimers)
 17. [Acknowledgments](#acknowledgments)
 
-**Other root-level docs:** [`TOOLS.md`](TOOLS.md) (full per-tool reference) · [`WHOOP_API_ENDPOINTS.md`](WHOOP_API_ENDPOINTS.md) (full API reference) · [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md) · [`LICENSE`](LICENSE)
+**Other root-level docs:** [`TOOLS.md`](TOOLS.md) (full per-tool reference) · [`WHOOP.md`](WHOOP.md) (full API reference) · [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md) · [`LICENSE`](LICENSE)
 
 ---
 
@@ -141,7 +141,7 @@ This MCP wraps the iOS surface.
 | Community leaderboards, hidden metrics, women's health (cycle / symptoms / MCI) | `whoop_leaderboard`, `whoop_hidden_metric`, `whoop_cycle*` |
 | **14 write tools** — log workouts, journal entries, profile edits, smart-alarm config | various |
 
-If recovery + sleep totals + workout list is enough for you, use the public OAuth API. If anything in the table is interesting, you need this. The iOS API was discovered via mitmproxy — full methodology in [`WHOOP_API_ENDPOINTS.md`](WHOOP_API_ENDPOINTS.md).
+If recovery + sleep totals + workout list is enough for you, use the public OAuth API. If anything in the table is interesting, you need this. The iOS API was discovered via mitmproxy — full methodology in [`WHOOP.md`](WHOOP.md).
 
 ---
 

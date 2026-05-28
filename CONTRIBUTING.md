@@ -61,7 +61,7 @@ curl http://localhost:3000/health   # → {"status":"ok"}
 
 Walkthrough lives in [README.md → Adding a new tool](README.md#adding-a-new-tool). Short version:
 
-1. Pick a source endpoint (browse [`WHOOP_API_ENDPOINTS.md`](WHOOP_API_ENDPOINTS.md) for the relevant microservice).
+1. Pick a source endpoint (browse [`WHOOP.md`](WHOOP.md) for the relevant microservice).
 2. Add a zod schema in `src/schemas/`.
 3. Add a projection function in `src/projections/`. Tested against captured fixtures in `tests/fixtures/*.json`.
 4. Add a tool file in `src/tools/v2/` (~30 lines: register with the MCP server, parse args, call client, project, validate, return).
@@ -85,10 +85,10 @@ To debug:
    - Sport name mappings changed (e.g. `weightlifting_msk` exposed via different internal_name)
 4. Rewrite the projection to walk the new shape.
 5. Update the per-projection tests with the new expected values.
-6. Document the migration in [`WHOOP_API_ENDPOINTS.md`](WHOOP_API_ENDPOINTS.md) so the next person knows.
+6. Document the migration in [`WHOOP.md`](WHOOP.md) so the next person knows.
 
 Recent precedents to read:
-- May 2026 deep-dive migration: `src/projections/recovery.ts`, `src/projections/strain.ts`. See [Pattern 2b in the endpoints doc](WHOOP_API_ENDPOINTS.md).
+- May 2026 deep-dive migration: `src/projections/recovery.ts`, `src/projections/strain.ts`. See [Pattern 2b in the endpoints doc](WHOOP.md).
 - Sport-name filter fix: `src/projections/lift_history.ts` — old `/strength/i` regex matched none of `weightlifting_msk` / `weightlifting` / `powerlifting`.
 
 ---

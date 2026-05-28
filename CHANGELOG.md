@@ -112,7 +112,7 @@ Initial public release.
 ### Documentation
 
 - [`README.md`](README.md) — full developer-grade documentation: setup, every tool's signature + endpoints + caveats, architecture, schema design, write-safety details, token usage analysis, FAQ, troubleshooting.
-- [`WHOOP_API_ENDPOINTS.md`](WHOOP_API_ENDPOINTS.md) — 5,900-line reverse-engineering writeup: methodology, every microservice, every endpoint, every body shape, every enum, every status code pattern, auth flows, capture sessions, the dedup pipeline.
+- [`WHOOP.md`](WHOOP.md) — 5,900-line reverse-engineering writeup: methodology, every microservice, every endpoint, every body shape, every enum, every status code pattern, auth flows, capture sessions, the dedup pipeline.
 
 ### Known limitations
 
