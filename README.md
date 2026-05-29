@@ -27,7 +27,7 @@
   <img src="assets/demo.png" alt="Claude Desktop using whoop-mcp to check today's recovery — 73% green with HRV, resting HR, and sleep performance breakdown" width="820">
 </p>
 
-48 tools, structured zod-validated outputs, bundled catalogs (372 exercises, 308 behaviors, 203 sports), write-safety harness, automatic Cognito token refresh, session-scoped catalog gate. TypeScript 6, Node 24, 154 tests.
+48 tools, structured zod-validated outputs, bundled catalogs (372 exercises, 308 behaviors, 203 sports), write-safety harness, automatic Cognito token refresh, session-scoped catalog gate. TypeScript 6, Node 24, 173 tests.
 
 > *Note: this works through Whoop's private iOS API rather than the public OAuth API. That isn't what Whoop's terms allow — see the [FAQ](#faq) if you want the full picture before installing.*
 
@@ -207,10 +207,10 @@ Compact summary. **Full per-tool reference (input shape · source endpoints · o
 | **Coach + performance** (2) | `whoop_coach_ask` ⚠️ · `whoop_performance_assessment` |
 | **Smart alarm** (2) | `whoop_smart_alarm` · `whoop_smart_alarm_set` ⚠️ |
 | **Social** (2) | `whoop_leaderboard` · `whoop_communities` |
-| **Settings** (5) | `whoop_hr_zones` · `whoop_hr_zones_set` ⚠️ · `whoop_profile_update` ⚠️ · `whoop_hidden_metric` ⚠️ |
+| **Settings** (4) | `whoop_hr_zones` · `whoop_hr_zones_set` ⚠️ · `whoop_profile_update` ⚠️ · `whoop_hidden_metric` ⚠️ |
 | **Escape hatch** (2) | `whoop_raw` · `whoop_endpoints` |
 
-**Total: 48** (31 reads + 14 writes + 2 escape hatches). For each tool's input args, source endpoint(s), and output shape, see [`TOOLS.md`](TOOLS.md).
+**Total: 48** (32 reads + 14 writes + 2 escape hatches). For each tool's input args, source endpoint(s), and output shape, see [`TOOLS.md`](TOOLS.md).
 
 ---
 

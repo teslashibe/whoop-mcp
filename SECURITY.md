@@ -52,10 +52,18 @@ When you set `MCP_TRANSPORT=http` and deploy to a public URL, you add:
 - **The bearer token (`MCP_AUTH_TOKEN`) is the only thing protecting your Whoop account.** Anyone with the URL + token gets full read+write. There is no second factor.
 - **Token compromise is total.** The server can't distinguish a leaked-token request from a legitimate one. The leaked token grants full account access until you rotate it.
 - **HTTPS is required in production.** Plain HTTP exposes the bearer token to anyone on the network path. Every recommended deploy host (Fly, Railway, Render, Cloudflare Tunnel) gives you HTTPS automatically. If you bring your own VPS, put it behind Caddy / Nginx with a TLS cert.
-- **The bearer token is compared with `crypto.timingSafeEqual`** to dodge timing-attack side channels. Length is also checked first, so a wrong-length token also returns 401 without exposing length via timing. Failed auth returns 401 with `WWW-Authenticate: Bearer realm="whoop-mcp"`; the server does not reveal whether the token was missing vs. wrong.
+- **The static bearer token is compared with `crypto.timingSafeEqual`** (via a constant-time helper that length-checks first, so a wrong-length token returns 401 without exposing length via timing) to dodge timing-attack side channels. The `/mcp` auth gate is the MCP SDK's `requireBearerAuth`, which also accepts OAuth 2.1 access tokens (the same `MCP_AUTH_TOKEN` signs them — see "OAuth" below). A failed request returns 401 with a `WWW-Authenticate: Bearer` header pointing at the protected-resource metadata (`/.well-known/oauth-protected-resource/mcp`, per RFC 9728) so OAuth clients can discover the authorization server.
 - **The MCP host can read your Whoop data.** Whoever operates the host you deploy to — Fly, Railway, your VPS provider, etc. — has root on the box. They can read the env vars (including `WHOOP_IOS_BEARER_TOKEN` + `WHOOP_COGNITO_REFRESH_TOKEN` + `MCP_AUTH_TOKEN`) and the running process memory. Don't deploy to a host you don't trust at the operator level.
 - **Logs are minimal but non-zero.** The server logs request errors to stderr. We avoid logging `Authorization` headers, tool arguments, and response bodies. If you fork and add custom logging, scrub these.
 - **Concurrent connections share state.** The catalog gate (`session_state.ts`) is process-global. Two clients connected to one deployment share the unlock state. Not a security issue (both are the same Whoop account) but worth noting if you fork it to support multiple users.
+
+### OAuth (claude.ai web + mobile connectors)
+
+Setting `AUTH_PASSWORD` enables a full OAuth 2.1 + PKCE authorization server (the MCP SDK's `mcpAuthRouter` + a custom provider in `src/whoop/oauth_provider.ts`), required for adding the server as a custom connector on claude.ai web / Claude mobile (which have no bearer-token field).
+
+- **A password gates the `/authorize` step.** Adding the connector serves a small password page; the user enters `AUTH_PASSWORD` once. A stranger who finds the URL can't connect without it. The password is checked with the same constant-time compare as the bearer token.
+- **Stateless tokens.** Access + refresh tokens are HS256 JWTs signed with `MCP_AUTH_TOKEN`; registered clients (dynamic client registration) encode their redirect URIs into a signed `client_id`. Only the 60-second authorization codes live in memory. This survives Fly's auto-stop restarts without a database — but it also means **rotating `MCP_AUTH_TOKEN` invalidates every issued OAuth token** (clients must re-authorize) in addition to the static bearer.
+- **Leave `AUTH_PASSWORD` unset to disable the OAuth path entirely** — then only the static bearer is accepted, as in the bullets above.
 
 ## Token hygiene
 

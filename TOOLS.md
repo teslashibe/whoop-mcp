@@ -61,7 +61,8 @@ Day strain + HR zone time buckets + steps + strength activity time + workouts co
 
 - **Input:** `{date?: string}`
 - **Source:** `GET /home-service/v1/deep-dive/strain?date=`
-- **Output:** `{date, score, calories, avg_hr_bpm, max_hr_bpm, zone_durations: {zone_0_ms..zone_5_ms}, workouts_count, steps, strength_activity_time_ms}`
+- **Output:** `{date, score, target: {value, optimal_lower, optimal_upper}, calories, avg_hr_bpm, max_hr_bpm, zone_durations: {zone_0_ms..zone_5_ms}, workouts_count, steps, strength_activity_time_ms}`
+- **Strain target:** `target.value` is Whoop's recovery-calibrated daily strain target; `optimal_lower`/`optimal_upper` bound the green zone. The deep-dive response stores these as 0–1 fractions of max strain (21); the projection multiplies by 21 so they're emitted as strain values, not fractions. Lets the AI answer "should I work out today?" with a number.
 - **Walk shape (new):** `SCORE_GAUGE { id: "STRAIN_SCORE_GAUGE" }.content.score_display` for the day strain, `CONTRIBUTORS_TILE { id: "STRAIN_CONTRIBUTORS_TILE" }.content.metrics[]` for time-bucket / step / strength-time contributors. `ACTIVITY` items in the same response represent the day's workouts (count = number of these items). Whoop migrated from `GRAPHING_CARD` tiles in May 2026; rewritten 2026-05-26.
 - **Removed fields:** `calories`, `avg_hr_bpm`, `max_hr_bpm`, and per-zone (zone_0/2/3/5) granularity are no longer in this deep-dive endpoint. They live per-workout — use `whoop_workout` for HR zone breakdown of a specific activity. The schema fields are kept (returning null) so the shape stays compatible if Whoop adds them back.
 - **HR zones:** Whoop now reports only `HR_ZONES_1_3` (low+mid intensity) and `HR_ZONES_4_5` (high intensity) at the day level. We store the 1-3 aggregate in `zone_1_ms` and the 4-5 aggregate in `zone_4_ms`; zones 0/2/3/5 stay null.
@@ -124,7 +125,7 @@ Current stress level (cheaper than `whoop_stress` if you don't need the timeline
 - **Source:** `GET /health-service/v2/stress-bff/{today}` (last point only)
 - **Output:** `{current_level, baseline_level, calibration_state, last_updated_at}`
 
-### Activities (2 read + 2 write)
+### Activities (2 read + 2 write + 1 catalog)
 
 #### `whoop_workouts`
 List of recent activities with sport, start, end, duration, strain, HR, calories.
@@ -350,7 +351,7 @@ Update one schedule, the global preferences, or the master enable/disable.
   - `master_disable` → `PUT /smart-alarm-service/v1/alarm-schedule/disable`
 - **Output:** `{updated: true, mode}` (or preview)
 
-### Social (1)
+### Social (2)
 
 #### `whoop_leaderboard`
 Community leaderboard + your position. Auto-discovers your first community if `community_id` omitted.
@@ -360,7 +361,15 @@ Community leaderboard + your position. Auto-discovers your first community if `c
 - **Output:** `{community_id, community_name, window, metric, date_label, average, total_compliant, total_empty, records: [{rank, user_id, first_name, last_name, value, secondary_value}], your_position: {rank, value, in_window}}`
 - **Note:** 404 on your row is handled gracefully — `in_window: false` instead of throwing.
 
-### Settings (1 read + 4 write)
+#### `whoop_communities`
+The communities you're a member of (teams, friend groups), each with member count and — optionally — your rank in it. Complements `whoop_leaderboard`: use this to discover community IDs, then drill into one with `whoop_leaderboard`.
+
+- **Input:** `{team_type?: "ALL"|"COMMUNITY"|"TEAM"|"BUSINESS", metric?: "strain"|"sleep"|"recovery", period?: "day"|"week"|"month", include_rank?: boolean, limit?: number, offset?: number}` (defaults: `team_type=ALL`, `metric=strain`, `period=week`, `include_rank=true`, `limit=50`, `offset=0`)
+- **Source:** `GET /community-service/v1/communities/memberships` (the same endpoint `whoop_leaderboard` uses for auto-discovery)
+- **Output:** `{total_count, offset, team_type_filter, leaderboard_metric, period, communities: [{id, name, avatar_url, banner_url, about, private, member_count, owner_id, team_type, membership: {member_type, notification_setting, unread_count, online, joined_at, last_online}, rank: {rank, score, metric, period} | null}]}`
+- **Schema status:** permissive at the record level — the per-record field set hasn't been captured against a live account yet, so most fields are nullable. A `WhoopProjectionError` from this tool is the signal that Whoop's actual shape differs from the inferred one and the projection needs tightening.
+
+### Settings (1 read + 3 write)
 
 #### `whoop_hr_zones`
 Current HR zones + max HR + last updated.

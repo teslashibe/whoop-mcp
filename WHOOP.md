@@ -891,7 +891,7 @@ The gamification surface. Whoop awards achievements as the user accumulates stre
 
 Whoop sometimes opens a fullscreen modal when a new achievement unlocks — this same endpoint is hit on every app start so the iOS app can compare against locally-cached level state and show the "you unlocked X" overlay.
 
-The MCP wraps this as part of `whoop_progress` (returns combined streaks + achievements).
+Not wrapped — `whoop_progress` (combined streaks + achievements) was in v1 but cut from v2. Reach it via `whoop_raw` if needed.
 
 ### activities-service
 
@@ -951,7 +951,7 @@ Context markers observed:
 
 Same fingerprint = same conversation (Whoop reuses conversations when context matches). Different fingerprint = new conversation.
 
-The MCP wraps `whoop_coach_ask` (real send + poll) and `whoop_coach_conversation` (read a specific turn). The async polling waits up to 30 × 1 second for the response.
+The MCP wraps `whoop_coach_ask`, which runs the full create-conversation → send-turn → poll-for-response flow in a single call. The async polling waits up to 30 × 1 second for the response.
 
 ### app-notifications-service
 
@@ -1590,7 +1590,7 @@ Strength Trainer exercise progressions + the weekly plan goal system.
 | GET | `/progression-service/v3/exercise?endDate={date}` | 200 | 24,913 B same shape — all exercises in one call. |
 | GET | `/progression-service/v3/trends/{metric}?endDate={date}` | 200 | 118,399 B `{metadata, header_name_display, segment_controller, integrations_upsell, week_time_segment, month_time_segment, six_month_time_segment, no_data_name_display, no_data_subtext_name_display, metric_education}` — generic trends endpoint. `{metric}` is the 25-value enum (HRV, RHR, RECOVERY, ...). |
 
-The MCP wraps `whoop_trend` (the 25-metric trend), `whoop_lift_progression` (single exercise), `whoop_weekly_plan` (was in v1 but cut from v2).
+The MCP wraps `whoop_trend` (the 25-metric trend) and `whoop_lift_progression` (single exercise). `whoop_weekly_plan` was in v1 but cut from v2.
 
 #### The metrics + segment shape
 
