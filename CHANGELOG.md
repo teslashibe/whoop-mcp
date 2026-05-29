@@ -104,7 +104,7 @@ Initial public release.
 
 ### Added
 
-- **48 MCP tools** wrapping Whoop's private iOS API:
+- **47 MCP tools** wrapping Whoop's private iOS API:
   - 31 reads (today, day, profile, calendar, recovery, sleep, strain, trend, compare, stress, sleep_need, live_hr, live_state, live_stress, workouts, workout, sports_catalog, lift_prs, lift_exercise, lift_progression, lift_history, lift_library, lift_catalog, journal, journal_catalog, behavior_impact, cycle, performance_assessment, smart_alarm, leaderboard, hr_zones)
   - 14 writes (activity_create, activity_delete, lift_log, lift_template_save, lift_custom_exercise, journal_log, journal_autopop, cycle_log, symptom_log, smart_alarm_set, hr_zones_set, profile_update, hidden_metric, coach_ask)
   - 2 escape hatches (raw, endpoints)
