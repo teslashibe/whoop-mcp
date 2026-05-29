@@ -387,7 +387,7 @@ async function assistedDeploy(opts: {
   loginCheck: () => boolean;
   loginCmd: () => Promise<number>;
   steps: Array<{ desc: string; cmd: [string, string[]] }>;
-  setPublicUrlHint: (url: string) => string;
+  setPublicUrlCmds: (url: string) => Array<[string, string[]]>;
   ctx: DeployCtx;
 }): Promise<string | null> {
   if (!commandExists(opts.cliName)) {
@@ -410,8 +410,17 @@ async function assistedDeploy(opts: {
   if (url && !/^https?:\/\//i.test(url)) url = "https://" + url; // accept a bare domain
   if (!/^https?:\/\/[^/.]+\.[^/]+/.test(url)) { console.log(c.red("  Need a valid URL (e.g. https://your-app.up.railway.app).")); return null; }
   url = url.replace(/\/$/, "");
-  console.log(c.gray(`  Now set PUBLIC_URL so OAuth works: ${opts.setPublicUrlHint(url)}`));
-  await promptYesNo("Done setting PUBLIC_URL + redeploying?", true);
+  // OAuth's issuer must equal the real URL, which we only know now — so set
+  // PUBLIC_URL and redeploy automatically (run() inherits stdio → the user sees
+  // progress) rather than asking them to run a command in a second terminal.
+  console.log(c.gray("  Setting PUBLIC_URL + redeploying so OAuth works…"));
+  for (const [cmd, args] of opts.setPublicUrlCmds(url)) {
+    console.log(c.gray(`    $ ${cmd} ${args.join(" ")}`));
+    if (await run(cmd, args, { cwd: opts.ctx.root }) !== 0) {
+      console.log(c.yellow("  That command failed — run it yourself, then continue."));
+      if (!(await promptYesNo("Continue anyway?", false))) return null;
+    }
+  }
   return url;
 }
 
@@ -435,7 +444,10 @@ async function deployRailway(ctx: DeployCtx): Promise<string | null> {
       { desc: "deploy (uploads + builds the Dockerfile)", cmd: ["railway", ["up", "--detach"]] },
       { desc: "generate a public domain", cmd: ["railway", ["domain"]] },
     ],
-    setPublicUrlHint: (url) => `railway variables --set "PUBLIC_URL=${url}" && railway up --detach`,
+    setPublicUrlCmds: (url) => [
+      ["railway", ["variables", "--set", `PUBLIC_URL=${url}`]],
+      ["railway", ["up", "--detach"]],
+    ],
     ctx,
   });
 }
@@ -490,7 +502,9 @@ async function deployCloudRun(ctx: DeployCtx): Promise<string | null> {
           ]],
         },
       ],
-      setPublicUrlHint: (url) => `gcloud run services update ${ctx.appName} --region us-west1 --update-env-vars PUBLIC_URL=${url}`,
+      setPublicUrlCmds: (url) => [
+        ["gcloud", ["run", "services", "update", ctx.appName, "--region", "us-west1", "--update-env-vars", `PUBLIC_URL=${url}`, "--quiet"]],
+      ],
       ctx,
     });
   } finally {
