@@ -74,6 +74,34 @@ export function genToken(): string {
   return randomBytes(32).toString("hex");
 }
 
+// Cryptographically-random password. Rejection sampling over an unambiguous
+// alphabet (no 0/O/1/l/I) plus symbols for entropy — safe to read/retype.
+export function genPassword(len = 18): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*-_=+";
+  const max = Math.floor(256 / alphabet.length) * alphabet.length; // reject modulo bias
+  let out = "";
+  while (out.length < len) {
+    const b = randomBytes(1)[0]!;
+    if (b < max) out += alphabet[b % alphabet.length];
+  }
+  return out;
+}
+
+// Best-effort copy to the OS clipboard. Returns true on success, false if no
+// clipboard tool is available (never throws).
+export function copyToClipboard(text: string): boolean {
+  const [cmd, args]: [string, string[]] =
+    process.platform === "darwin" ? ["pbcopy", []]
+    : process.platform === "win32" ? ["clip", []]
+    : ["xclip", ["-selection", "clipboard"]];
+  try {
+    const r = spawnSync(cmd, args, { input: text });
+    return (r.status ?? 1) === 0;
+  } catch {
+    return false;
+  }
+}
+
 // Run a bundled script resiliently. A published install (`npm install -g`)
 // ships the compiled `dist/*.js` and only runtime deps — no `tsx`/`typescript`.
 // A dev checkout has `tsx` + the TypeScript source. Prefer whichever fits:

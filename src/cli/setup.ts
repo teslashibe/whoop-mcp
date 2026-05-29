@@ -10,7 +10,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  c, run, capture, commandExists, genToken, httpGet,
+  c, run, capture, commandExists, genToken, genPassword, copyToClipboard, httpGet,
   prompt, promptYesNo, promptChoice, step, closePrompts,
   runScript, ensureCli, openUrl,
 } from "./ui.js";
@@ -201,10 +201,22 @@ export async function runCloudSetup(root: string): Promise<number> {
   step(3, TOTAL, "Generate secrets");
   const mcpToken = genToken();
   console.log(`  MCP_AUTH_TOKEN: ${c.gray(mcpToken.slice(0, 12) + "… (generated)")}`);
-  let password = await prompt("Pick a connector password (you'll type this once in Claude when adding it)");
-  while (password.length < 12) {
-    console.log(c.red("  Use at least 12 characters — this gates remote access to your health data."));
-    password = await prompt("Connector password");
+  console.log(c.gray("  Connector password — you'll paste this into Claude once when adding the server."));
+  console.log(c.gray("  Press Enter to auto-generate a secure 18-char one, or type your own (min 12)."));
+  const useGenerated = (pw: string): string => {
+    const copied = copyToClipboard(pw);
+    console.log(`  ${c.green("✓")} generated: ${c.bold(pw)}${copied ? c.green("   ✓ copied to clipboard") : c.gray("   (copy it now)")}`);
+    return pw;
+  };
+  let password = await prompt("Password (Enter = auto-generate)");
+  if (password === "") {
+    password = useGenerated(genPassword(18));
+  } else {
+    while (password.length < 12) {
+      console.log(c.red("  Use at least 12 characters (or press Enter to auto-generate)."));
+      password = await prompt("Password (Enter = auto-generate)");
+      if (password === "") { password = useGenerated(genPassword(18)); break; }
+    }
   }
 
   const baseEnv: Record<string, string> = {
@@ -220,7 +232,12 @@ export async function runCloudSetup(root: string): Promise<number> {
 
   step(4, TOTAL, `Deploy to ${platform}`);
   const defaultName = `whoop-mcp-${genToken().slice(0, 6)}`;
-  const appName = platform === "custom" ? "whoop-mcp" : await prompt("App name", defaultName);
+  let appName = "whoop-mcp";
+  if (platform !== "custom") {
+    console.log(c.gray("  App name is optional — press Enter to use the suggested one in [brackets],"));
+    console.log(c.gray("  or type your own (must be globally unique on the host)."));
+    appName = await prompt("App name (Enter = use suggested)", defaultName);
+  }
   const ctx: DeployCtx = { root, env: baseEnv, appName, password };
 
   let url: string | null = null;
@@ -251,18 +268,24 @@ export async function runCloudSetup(root: string): Promise<number> {
 // ── verification ─────────────────────────────────────────────────────────────
 async function verifyDeployment(baseUrl: string): Promise<boolean> {
   const root = baseUrl.replace(/\/(mcp)?$/, "");
-  for (let i = 0; i < 10; i++) {
-    const health = await httpGet(`${root}/health`);
-    if (health.status === 200) break;
-    console.log(c.gray(`  waiting for ${root}/health … (${i + 1}/10)`));
-    await new Promise((r) => setTimeout(r, 3000));
+  // Poll fast: a short per-attempt timeout means a not-yet-propagated DNS / cold
+  // start fails in ~3s instead of hanging the full 12s default, and a tight 1.5s
+  // interval detects readiness within ~1.5s of the host coming up. (Previously a
+  // 12s timeout × 3s sleep × 10 made this feel like ~3 minutes.)
+  const deadline = Date.now() + 90_000;
+  let healthy = false;
+  let announced = false;
+  while (Date.now() < deadline) {
+    const health = await httpGet(`${root}/health`, 3000);
+    if (health.status === 200) { healthy = true; break; }
+    if (!announced) { console.log(c.gray(`  waiting for ${root} (DNS + first boot)…`)); announced = true; }
+    await new Promise((r) => setTimeout(r, 1500));
   }
-  const health = await httpGet(`${root}/health`);
-  console.log(`  /health: ${health.status === 200 ? c.green("200 ✓") : c.red(String(health.status || "timeout"))}`);
-  const prm = await httpGet(`${root}/.well-known/oauth-protected-resource/mcp`);
+  console.log(`  /health: ${healthy ? c.green("200 ✓") : c.red("timeout")}`);
+  const prm = await httpGet(`${root}/.well-known/oauth-protected-resource/mcp`, 5000);
   const prmOk = prm.status === 200 && prm.body.includes("/mcp");
   console.log(`  OAuth metadata: ${prmOk ? c.green("✓") : c.red("not found")}`);
-  return health.status === 200 && prmOk;
+  return healthy && prmOk;
 }
 
 function printConnectInstructions(url: string, password: string): void {
