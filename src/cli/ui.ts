@@ -9,18 +9,21 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 export const useColor = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+// Modern truecolor palette (Tailwind-400-ish) — vivid but easy on a dark terminal.
 const ANSI = {
   reset: "\x1b[0m",
   bold: "\x1b[1m",
   dim: "\x1b[2m",
-  brand: "\x1b[38;2;225;225;225m",
+  brand: "\x1b[38;2;235;235;235m",
   brandDim: "\x1b[38;2;150;150;150m",
-  gray: "\x1b[38;2;120;120;120m",
-  white: "\x1b[97m",
-  green: "\x1b[92m",
-  red: "\x1b[91m",
-  yellow: "\x1b[93m",
-  cyan: "\x1b[96m",
+  gray: "\x1b[38;2;128;128;128m",
+  white: "\x1b[38;2;245;245;245m",
+  green: "\x1b[38;2;52;211;153m",   // emerald
+  red: "\x1b[38;2;248;113;113m",    // red
+  yellow: "\x1b[38;2;251;191;36m",  // amber
+  cyan: "\x1b[38;2;34;211;238m",    // cyan
+  violet: "\x1b[38;2;167;139;250m", // violet
+  pink: "\x1b[38;2;244;114;182m",   // pink
 };
 function wrap(code: string, s: string): string {
   return useColor ? `${code}${s}${ANSI.reset}` : s;
@@ -34,6 +37,8 @@ export const c = {
   red: (s: string) => wrap(ANSI.red, s),
   yellow: (s: string) => wrap(ANSI.yellow, s),
   cyan: (s: string) => wrap(ANSI.cyan, s),
+  violet: (s: string) => wrap(ANSI.violet, s),
+  pink: (s: string) => wrap(ANSI.pink, s),
   bold: (s: string) => wrap(ANSI.bold, s),
   dim: (s: string) => wrap(ANSI.dim, s),
 };
@@ -61,6 +66,76 @@ export function run(cmd: string, args: string[], opts: SpawnOptions = {}): Promi
 export function capture(cmd: string, args: string[], opts: SpawnOptions = {}): { code: number; stdout: string; stderr: string } {
   const r = spawnSync(cmd, args, { encoding: "utf8", ...opts });
   return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+}
+
+// Async sibling of capture(). `capture` uses spawnSync, which BLOCKS the event
+// loop for the whole subprocess — so a spinner (setInterval) can't animate over
+// it. For slow, network-bound lookups (gcloud/railway/fly API calls) run them
+// through this instead and wrap with withSpinner() so the UI stays alive.
+export function captureAsync(cmd: string, args: string[], opts: SpawnOptions = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((res) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], ...opts });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (d: Buffer) => (stdout += d.toString()));
+    child.stderr?.on("data", (d: Buffer) => (stderr += d.toString()));
+    child.on("error", () => res({ code: 1, stdout, stderr }));
+    child.on("close", (code) => res({ code: code ?? 1, stdout, stderr }));
+  });
+}
+
+// ── spinner ──────────────────────────────────────────────────────────────
+// A braille spinner for the "thinking" gaps where we do work with no visible
+// output (our own network lookups, HTTP polling, backoff waits). Subprocesses
+// run with inherited stdio print their own progress, so they don't need this.
+// IMPORTANT: a spinner only animates while the event loop is free — pair it
+// with async work (await captureAsync / httpGet / setTimeout), never spawnSync.
+const SPIN_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+export interface Spinner {
+  stop: (final?: string) => void;
+}
+
+export function spin(message: string | (() => string)): Spinner {
+  // Message can be a live function (e.g. an elapsed-time counter), re-evaluated
+  // on every frame.
+  const msg = (): string => (typeof message === "function" ? message() : message);
+  // No TTY (piped/CI): no cursor tricks — print the message once, plainly.
+  if (!process.stdout.isTTY) {
+    console.log(c.gray(`  ${msg()}…`));
+    return { stop: (final) => { if (final) console.log(final); } };
+  }
+  let i = 0;
+  process.stdout.write("\x1b[?25l"); // hide cursor
+  const draw = (): void => {
+    process.stdout.write(`\r\x1b[2K${c.cyan(SPIN_FRAMES[i % SPIN_FRAMES.length]!)} ${c.gray(msg())}`);
+    i++;
+  };
+  draw();
+  const timer = setInterval(draw, 80);
+  return {
+    stop: (final?: string): void => {
+      clearInterval(timer);
+      process.stdout.write("\r\x1b[2K\x1b[?25h"); // clear line + restore cursor
+      if (final) console.log(final);
+    },
+  };
+}
+
+// Run async work under a spinner; always stops the spinner, even on throw.
+export async function withSpinner<T>(message: string, fn: () => Promise<T>): Promise<T> {
+  const s = spin(message);
+  try {
+    return await fn();
+  } finally {
+    s.stop();
+  }
+}
+
+// A visible backoff: spin for `ms` so a silent wait doesn't look like a hang.
+export async function pause(ms: number, message: string): Promise<void> {
+  const s = spin(message);
+  await new Promise((r) => setTimeout(r, ms));
+  s.stop();
 }
 
 // Is a CLI tool on PATH? Uses which/where (real executables) rather than the
@@ -210,10 +285,19 @@ export function ping(url: string, timeoutMs = 10_000): Promise<number> {
 // On EOF (piped input) the question resolves empty instead of throwing.
 async function ask(query: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // Ctrl-C during a text prompt: readline swallows SIGINT (emits it on the
+  // interface, so it never reaches the process). Handle it here — restore the
+  // cursor, drop to a fresh line, and exit immediately.
+  rl.on("SIGINT", () => { process.stderr.write("\x1b[?25h"); process.stdout.write("\n"); process.exit(130); });
   try {
-    return (await rl.question(query)).trim();
-  } catch {
-    return "";
+    // Race the answer against the stream closing: on EOF (Ctrl-D, piped input
+    // that ran out, a closed stdin) `rl.question` can hang forever instead of
+    // rejecting, which would freeze the whole guided flow. Resolving "" on close
+    // lets the caller fall back to its default rather than looking broken.
+    return await new Promise<string>((resolve) => {
+      rl.once("close", () => resolve(""));
+      rl.question(query).then((a) => resolve(a.trim())).catch(() => resolve(""));
+    });
   } finally {
     rl.close();
   }
@@ -224,21 +308,25 @@ export function closePrompts(): void {}
 
 export async function prompt(question: string, fallback = ""): Promise<string> {
   const suffix = fallback ? c.gray(` [${fallback}]`) : "";
-  const answer = await ask(`${c.cyan("?")} ${question}${suffix}: `);
+  const answer = await ask(`${c.violet("?")} ${c.white(question)}${suffix}${c.gray(" ›")} `);
   return answer || fallback;
 }
 
+// Enter — and ANY answer that isn't an explicit "no" — proceeds when `defaultYes`
+// is set. To decline you must actually type n / no / N / NO. (When `defaultYes`
+// is false it's the mirror: only an explicit y / yes proceeds.)
 export async function promptYesNo(question: string, defaultYes = true): Promise<boolean> {
-  const hint = defaultYes ? "Y/n" : "y/N";
-  const answer = (await ask(`${c.cyan("?")} ${question} ${c.gray(`(${hint})`)}: `)).toLowerCase();
-  if (!answer) return defaultYes;
-  return answer === "y" || answer === "yes";
+  const hint = defaultYes ? `${c.green(c.bold("Y"))}${c.gray("/n")}` : `${c.gray("y/")}${c.red(c.bold("N"))}`;
+  const answer = (await ask(`${c.violet("?")} ${c.white(question)} ${c.gray("(")}${hint}${c.gray(")")}${c.gray(" ›")} `)).trim().toLowerCase();
+  if (defaultYes) return !/^(n|no)$/.test(answer);
+  return /^(y|yes)$/.test(answer);
 }
 
-// Numbered menu. Returns the 0-based index of the choice.
+// Numbered menu. Returns the 0-based index of the choice. Used as the non-TTY
+// fallback for select() (piped stdin can't do raw-mode arrow keys).
 export async function promptChoice(question: string, choices: string[]): Promise<number> {
-  console.log(`${c.cyan("?")} ${question}`);
-  choices.forEach((ch, i) => console.log(`  ${c.bold(String(i + 1))}. ${ch}`));
+  console.log(`${c.violet("?")} ${c.bold(c.white(question))}`);
+  choices.forEach((ch, i) => console.log(`  ${c.cyan(c.bold(String(i + 1)))}${c.gray(".")} ${ch}`));
   for (let attempts = 0; attempts < 100; attempts++) {
     const raw = await ask(`  ${c.gray("enter a number")}: `);
     const n = parseInt(raw, 10);
@@ -249,8 +337,122 @@ export async function promptChoice(question: string, choices: string[]): Promise
   return 0;
 }
 
-// Section header for the guided flows.
+// ── arrow-key selector ──────────────────────────────────────────────────────
+// Up/down (or j/k, or 1-9) to move, Enter to pick, Ctrl-C to cancel. Each choice
+// is a label with an optional dim hint. Returns the 0-based index. Falls back to
+// the numbered prompt when stdin/stdout isn't an interactive TTY (pipes, CI).
+export interface SelectChoice {
+  label: string;
+  hint?: string | undefined;
+}
+
+export async function select(
+  question: string,
+  choices: Array<string | SelectChoice>,
+  opts: { defaultIndex?: number } = {},
+): Promise<number> {
+  const items = choices.map((ch) => (typeof ch === "string" ? { label: ch } : ch));
+  const stdin = process.stdin;
+  const interactive = Boolean(stdin.isTTY) && Boolean(process.stdout.isTTY) && typeof stdin.setRawMode === "function";
+  if (!interactive) {
+    return promptChoice(question, items.map((it) => (it.hint ? `${it.label} ${c.gray(it.hint)}` : it.label)));
+  }
+
+  let idx = Math.min(Math.max(opts.defaultIndex ?? 0, 0), items.length - 1);
+
+  const render = (first: boolean): void => {
+    if (!first) process.stdout.write(`\x1b[${items.length + 1}A`); // back up to the question line
+    process.stdout.write(`\r\x1b[2K${c.violet("?")} ${c.bold(c.white(question))}  ${c.dim("↑/↓ · enter")}\n`);
+    items.forEach((it, i) => {
+      const selected = i === idx;
+      const pointer = selected ? c.cyan("❯") : " ";
+      const label = selected ? c.bold(c.cyan(it.label)) : c.white(it.label);
+      const hint = it.hint ? "  " + c.dim(it.hint) : "";
+      process.stdout.write(`\r\x1b[2K ${pointer} ${label}${hint}\n`);
+    });
+  };
+
+  render(true);
+  process.stdout.write("\x1b[?25l"); // hide the blinking cursor while the menu is active
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding("utf8");
+
+  const n = items.length;
+  return new Promise<number>((resolveSel) => {
+    const cleanup = (): void => {
+      stdin.setRawMode(false);
+      stdin.pause();
+      stdin.removeListener("data", onData);
+      process.stdout.write("\x1b[?25h"); // restore the cursor once a choice is made
+    };
+    // Scan the chunk left-to-right rather than exact-matching the whole thing:
+    // a single read can batch several bytes (a paste, a fast double-press, or a
+    // terminal/PTY that delivers the arrow sequence and the Enter together like
+    // "\x1b[B\r"). Incomplete escape sequences at a chunk boundary are stashed in
+    // `pending` and prepended to the next read so a split "\x1b" + "[B" still works.
+    let pending = "";
+    const onData = (raw: string): void => {
+      const chunk = pending + raw;
+      pending = "";
+      if (chunk.includes("\x03")) { cleanup(); process.stdout.write("\n"); process.exit(130); }
+      let moved = false;
+      let i = 0;
+      while (i < chunk.length) {
+        const rest = chunk.slice(i);
+        const ch = rest[0]!;
+        if (ch === "\r" || ch === "\n") { cleanup(); if (moved) render(false); resolveSel(idx); return; }
+        if (ch === "\x1b") {
+          if (rest === "\x1b" || rest === "\x1b[") { pending = rest; break; } // incomplete — wait for more
+          if (rest.startsWith("\x1b[A")) { idx = (idx - 1 + n) % n; moved = true; i += 3; continue; }
+          if (rest.startsWith("\x1b[B")) { idx = (idx + 1) % n; moved = true; i += 3; continue; }
+          i += rest.length >= 3 ? 3 : rest.length; continue; // unknown escape — skip it
+        }
+        if (ch === "k") { idx = (idx - 1 + n) % n; moved = true; }
+        else if (ch === "j") { idx = (idx + 1) % n; moved = true; }
+        else if (/[1-9]/.test(ch)) { const x = parseInt(ch, 10) - 1; if (x < n) { idx = x; moved = true; } }
+        i += 1;
+      }
+      if (moved) render(false);
+    };
+    stdin.on("data", onData);
+  });
+}
+
+// ── confirmation for sensitive actions ──────────────────────────────────────
+// A loud, explicit y/n gate for anything that mutates cloud state, spends money,
+// or changes permissions. Shows exactly what will run + why, so the user is
+// giving informed consent rather than watching it happen.
+export interface ConfirmOpts {
+  detail?: string;        // one-line consequence ("grants build access to …")
+  cmd?: string;           // the exact command we're about to run
+  defaultYes?: boolean;   // Enter = proceed (true) vs Enter = decline (false)
+}
+
+export async function confirmStep(summary: string, opts: ConfirmOpts = {}): Promise<boolean> {
+  console.log(`  ${c.yellow("⚠")}  ${c.bold(c.white(summary))}`);
+  if (opts.detail) console.log(`     ${c.gray(opts.detail)}`);
+  if (opts.cmd) console.log(`     ${c.dim("$")} ${c.cyan(opts.cmd)}`);
+  return promptYesNo("  Proceed?", opts.defaultYes ?? true);
+}
+
+// Redact secret values when echoing a command so tokens/passwords never hit the
+// screen or scrollback. Masks the value of any KEY=value whose key looks
+// sensitive (or whose value is long enough to be a token).
+export function maskArgs(args: string[]): string {
+  return args
+    .map((a) => {
+      const eq = a.indexOf("=");
+      if (eq <= 0) return a;
+      const key = a.slice(0, eq);
+      if (/(_?TOKEN|PASSWORD|_SECRET|BEARER|REFRESH|EMAIL)/i.test(key)) return `${key}=${c.dim("•••")}`;
+      return a;
+    })
+    .join(" ");
+}
+
+// Section header for the guided flows — a violet rule + step counter + title.
 export function step(n: number, total: number, title: string): void {
   console.log("");
-  console.log(`${c.brand(`[${n}/${total}]`)} ${c.bold(title)}`);
+  console.log(`${c.violet("▌")} ${c.violet(c.bold(`${n}/${total}`))}  ${c.bold(c.white(title))}`);
 }

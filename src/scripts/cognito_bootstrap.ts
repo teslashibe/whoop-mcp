@@ -1,13 +1,23 @@
-// One-time Cognito SRP login. Reads WHOOP_EMAIL + WHOOP_PASSWORD from .env,
-// authenticates against AWS Cognito, prompts for SMS MFA code if required,
-// writes access_token + refresh_token to .env.
+// `whoop-mcp auth` — the one token command. It logs you into Whoop (Cognito),
+// saves the tokens to .env, and — if you've deployed somewhere — pushes them to
+// that deployment so the running server picks them up. Auto-detects:
+//   • new vs re-auth    — whether you already have tokens (messaging only)
+//   • local vs deployed — reads .whoop-mcp-deploy.json and pushes per-platform
+//     (Fly / Railway / Cloud Run / custom), or notes "restart your client" for a
+//     local install. Legacy: --app / $FLY_APP / fly.toml still target Fly.
+// Run it for first-time setup, or whenever the ~30-day refresh token expires.
+//
+// When invoked as a sub-step of `whoop-mcp cloud` / `local` (which handle the
+// deploy themselves), set WHOOP_AUTH_TOKENS_ONLY=1 to skip the push step.
 import "dotenv/config";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { resolve } from "node:path";
 import { bootstrapCognito, refreshCognitoSession } from "../whoop/cognito.js";
 
 const ENV_PATH = resolve(".env");
+const RECORD_PATH = resolve(".whoop-mcp-deploy.json");
 
 function readEnv(key: string): string | undefined {
   if (!existsSync(ENV_PATH)) return undefined;
@@ -27,19 +37,120 @@ function upsertEnv(updates: Record<string, string>): void {
   writeFileSync(ENV_PATH, lines.join("\n"));
 }
 
-async function main() {
-  const email = process.env.WHOOP_EMAIL ?? readEnv("WHOOP_EMAIL");
-  const password = process.env.WHOOP_PASSWORD ?? readEnv("WHOOP_PASSWORD");
+interface DeployTarget {
+  platform: string;
+  app?: string;
+  url?: string;
+  region?: string;
+  project?: string;
+}
 
-  if (!email || !password) {
-    console.error("Missing WHOOP_EMAIL or WHOOP_PASSWORD in .env");
-    console.error("Add them, then re-run: whoop-mcp auth");
-    process.exit(1);
+function getTarget(): DeployTarget {
+  // 1. The deploy record written by `whoop-mcp cloud` / `local`.
+  if (existsSync(RECORD_PATH)) {
+    try {
+      const r = JSON.parse(readFileSync(RECORD_PATH, "utf8")) as DeployTarget;
+      if (r && typeof r.platform === "string") return r;
+    } catch { /* fall through */ }
   }
+  // 2. Legacy Fly detection (deploys made before the record existed).
+  const argIdx = process.argv.indexOf("--app");
+  if (argIdx >= 0 && process.argv[argIdx + 1]) return { platform: "fly", app: process.argv[argIdx + 1]! };
+  if (process.env.FLY_APP) return { platform: "fly", app: process.env.FLY_APP };
+  if (existsSync("fly.toml")) {
+    const m = readFileSync("fly.toml", "utf8").match(/^app\s*=\s*['"]([^'"]+)['"]/m);
+    if (m && m[1]) return { platform: "fly", app: m[1] };
+  }
+  // 3. No remote → local stdio install.
+  return { platform: "local" };
+}
 
-  console.log("Authenticating with AWS Cognito (us-west-2_rYv1jhSC3)...");
+// Push the rotated tokens to the deploy target. Token values go to the host CLIs
+// as argv (never echoed by us), so they don't leak to the screen. Returns true on
+// success (or when there's nothing remote to push — local/custom).
+function pushTokens(t: DeployTarget, accessToken: string, refreshToken: string): boolean {
+  const inherit = { stdio: "inherit" as const };
+  const manual = (): void => {
+    console.error("Set these on your host yourself, then restart it:");
+    console.error(`  WHOOP_IOS_BEARER_TOKEN=${accessToken}`);
+    console.error(`  WHOOP_COGNITO_REFRESH_TOKEN=${refreshToken}`);
+  };
 
+  switch (t.platform) {
+    case "local":
+      console.log("Local install — nothing remote to update.");
+      console.log("  → If the server is running (Claude Desktop / Code), restart it to load the new tokens.");
+      return true;
+
+    case "custom":
+      console.log("Custom host — set these two on your server, then restart it:");
+      console.log(`  WHOOP_IOS_BEARER_TOKEN=${accessToken}`);
+      console.log(`  WHOOP_COGNITO_REFRESH_TOKEN=${refreshToken}`);
+      return true;
+
+    case "fly": {
+      if (!t.app) { console.error("No Fly app recorded."); manual(); return false; }
+      console.log(`Pushing to Fly app '${t.app}'…`);
+      const r = spawnSync("fly", ["secrets", "set",
+        `WHOOP_IOS_BEARER_TOKEN=${accessToken}`,
+        `WHOOP_COGNITO_REFRESH_TOKEN=${refreshToken}`, "-a", t.app], inherit);
+      if (r.status === 0) { console.log(`  → done. Test: curl https://${t.app}.fly.dev/health`); return true; }
+      console.error("`fly secrets set` failed (is flyctl installed + `fly auth login` done?)."); manual(); return false;
+    }
+
+    case "railway": {
+      console.log(`Pushing to Railway project '${t.app ?? "(linked)"}'…`);
+      if (t.app) spawnSync("railway", ["link", "--project", t.app], inherit);
+      const r = spawnSync("railway", ["variables", "--set",
+        `WHOOP_IOS_BEARER_TOKEN=${accessToken}`, "--set",
+        `WHOOP_COGNITO_REFRESH_TOKEN=${refreshToken}`], inherit);
+      if (r.status === 0) { console.log("  → done. Railway is redeploying with the new tokens."); return true; }
+      console.error("`railway variables` failed (is the CLI installed, logged in, and the project linked?)."); manual(); return false;
+    }
+
+    case "cloudrun": {
+      if (!t.app) { console.error("No Cloud Run service recorded."); manual(); return false; }
+      const region = t.region ?? "us-west1";
+      console.log(`Pushing to Cloud Run service '${t.app}' (${region})…`);
+      const r = spawnSync("gcloud", ["run", "services", "update", t.app,
+        "--region", region,
+        ...(t.project ? ["--project", t.project] : []),
+        "--update-env-vars", `WHOOP_IOS_BEARER_TOKEN=${accessToken},WHOOP_COGNITO_REFRESH_TOKEN=${refreshToken}`,
+        "--quiet"], inherit);
+      if (r.status === 0) { console.log("  → done. Cloud Run deployed a new revision with the new tokens."); return true; }
+      console.error("`gcloud run services update` failed (is gcloud installed, authed, on the right project?)."); manual(); return false;
+    }
+
+    default:
+      console.log(`Unknown deploy platform '${t.platform}'. Tokens are saved in .env; update your host manually:`);
+      manual();
+      return true;
+  }
+}
+
+async function main(): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // Ctrl-C at any prompt: readline swallows SIGINT, so exit explicitly.
+  rl.on("SIGINT", () => process.exit(130));
+
+  // Email + password — prompt + persist if not already in .env / env.
+  let email = process.env.WHOOP_EMAIL ?? readEnv("WHOOP_EMAIL");
+  if (!email) { email = (await rl.question("Your Whoop account email: ")).trim(); if (email) upsertEnv({ WHOOP_EMAIL: email }); }
+  let password = process.env.WHOOP_PASSWORD ?? readEnv("WHOOP_PASSWORD");
+  if (!password) { password = (await rl.question("Your Whoop account password (stored in local .env, used once): ")).trim(); if (password) upsertEnv({ WHOOP_PASSWORD: password }); }
+  if (!email || !password) { console.error("Email + password are required."); rl.close(); process.exit(1); }
+
+  const tokensOnly = process.env.WHOOP_AUTH_TOKENS_ONLY === "1";
+  const hadTokens = Boolean(readEnv("WHOOP_IOS_BEARER_TOKEN") && readEnv("WHOOP_COGNITO_REFRESH_TOKEN"));
+  const target = getTarget();
+
+  console.log("");
+  console.log(hadTokens ? "Re-authenticating with Whoop — refreshing your tokens…" : "Authenticating with Whoop — first-time setup…");
+  if (!tokensOnly && target.platform !== "local") {
+    console.log(`Then updating your ${target.platform} deployment${target.app ? ` '${target.app}'` : ""}.`);
+  }
+  console.log("(you'll be asked for an SMS code only if your account has MFA)");
+  console.log("");
 
   let tokens;
   try {
@@ -48,79 +159,52 @@ async function main() {
       password,
       mfaPrompt: async () => {
         console.log("");
-        const code = await rl.question("Enter the SMS MFA code Whoop just texted you: ");
-        return code;
+        return rl.question("Enter the SMS MFA code Whoop just texted you: ");
       },
     });
   } catch (err) {
     rl.close();
-    console.error("\nBootstrap failed:", err instanceof Error ? err.message : err);
+    console.error("\nAuth failed:", err instanceof Error ? err.message : err);
     process.exit(1);
   }
-
   rl.close();
+  console.log("  → got fresh access + refresh tokens.");
 
-  upsertEnv({
-    WHOOP_IOS_BEARER_TOKEN: tokens.accessToken,
-    WHOOP_COGNITO_REFRESH_TOKEN: tokens.refreshToken,
-  });
+  let access = tokens.accessToken;
+  let refresh = tokens.refreshToken;
+  upsertEnv({ WHOOP_IOS_BEARER_TOKEN: access, WHOOP_COGNITO_REFRESH_TOKEN: refresh });
 
-  const lifetimeHours = Math.round((tokens.expiresAt - Date.now()) / 3600000);
-  console.log("");
-  console.log(`Initial auth OK. Access token expires in ~${lifetimeHours}h. Refresh token saved.`);
-  console.log("");
-  console.log("Verifying that auto-refresh works (no MFA expected)...");
-
+  // Verify auto-refresh works (catches "account requires MFA on every login").
+  // This rotates the access token, so push the freshest one afterward.
   try {
-    const refreshed = await refreshCognitoSession(email, tokens.refreshToken);
-    if (!refreshed.accessToken || refreshed.accessToken === tokens.accessToken) {
-      console.error("  WARN: refresh returned no new access token. Auto-refresh may not work.");
-    } else {
-      const newHours = Math.round((refreshed.expiresAt - Date.now()) / 3600000);
-      console.log(`  Auto-refresh works. New access token expires in ~${newHours}h.`);
-      // Persist the refreshed access token (and refresh token if Cognito rotated it)
-      upsertEnv({
-        WHOOP_IOS_BEARER_TOKEN: refreshed.accessToken,
-        ...(refreshed.refreshToken && refreshed.refreshToken !== tokens.refreshToken
-          ? { WHOOP_COGNITO_REFRESH_TOKEN: refreshed.refreshToken }
-          : {}),
-      });
-    }
-  } catch (err) {
-    console.error("");
-    console.error("Auto-refresh FAILED:", err instanceof Error ? err.message : err);
-    console.error("");
-    console.error("This means Whoop's Cognito requires MFA on every auth.");
-    console.error("You'll need to re-run `whoop-mcp auth` whenever access token expires (~24h).");
-    process.exit(2);
-  }
-
-  // Fetch user_id + display name so the user doesn't need a separate "whoami" step.
-  // Uses the access token we just persisted.
-  try {
-    const finalToken = readEnv("WHOOP_IOS_BEARER_TOKEN");
-    if (finalToken) {
-      const r = await fetch("https://api.prod.whoop.com/users-service/v2/bootstrap?apiVersion=7", {
-        headers: { authorization: `bearer ${finalToken}`, accept: "application/json" },
-      });
-      if (r.ok) {
-        const j = (await r.json()) as { user?: { id?: number; first_name?: string; last_name?: string } };
-        const uid = j.user?.id;
-        if (uid) {
-          upsertEnv({ WHOOP_USER_ID: String(uid) });
-          console.log("");
-          console.log(`  user_id: ${uid} (${j.user?.first_name ?? ""} ${j.user?.last_name ?? ""})`.trimEnd());
-          console.log(`  Saved WHOOP_USER_ID to .env`);
-        }
-      }
+    const refreshed = await refreshCognitoSession(email, refresh);
+    if (refreshed.accessToken && refreshed.accessToken !== access) {
+      access = refreshed.accessToken;
+      if (refreshed.refreshToken && refreshed.refreshToken !== refresh) refresh = refreshed.refreshToken;
+      upsertEnv({ WHOOP_IOS_BEARER_TOKEN: access, WHOOP_COGNITO_REFRESH_TOKEN: refresh });
+      console.log("  → auto-refresh works (the server keeps the access token fresh on its own).");
     }
   } catch {
-    /* user_id fetch is optional — the MCP can derive it at runtime */
+    console.log("  ⚠ auto-refresh check failed — your account may require MFA on every login (expect to re-auth more often).");
   }
 
+  // Save user_id (best-effort — saves a redundant bootstrap call per session).
+  try {
+    const r = await fetch("https://api.prod.whoop.com/users-service/v2/bootstrap?apiVersion=7", {
+      headers: { authorization: `bearer ${access}`, accept: "application/json" },
+    });
+    if (r.ok) {
+      const j = (await r.json()) as { user?: { id?: number } };
+      if (j.user?.id) { upsertEnv({ WHOOP_USER_ID: String(j.user.id) }); console.log(`  → user_id ${j.user.id} saved.`); }
+    }
+  } catch { /* optional */ }
+
   console.log("");
-  console.log("Setup complete. The MCP will auto-refresh access tokens going forward.");
-  console.log("Re-bootstrap only when the refresh token expires (~30 days).");
+  if (tokensOnly) {
+    console.log("Tokens saved to .env.");
+    return;
+  }
+  pushTokens(target, access, refresh);
 }
 
 await main();

@@ -68,26 +68,29 @@ const c = {
 };
 
 // ── banner ───────────────────────────────────────────────────────────────
+// The banner prints on EVERY command, at the very top — but to STDERR, so it
+// shows in the terminal without ever touching stdout. That keeps the MCP
+// protocol stream clean on `start`/`dev`, the parseable output clean on
+// `version`/`config`, and every command safe to pipe. Color is decided from
+// stderr's TTY (not stdout's) since that's where it's written.
 function printBanner(): void {
+  const color = Boolean(process.stderr.isTTY) && !process.env.NO_COLOR;
+  const w = (code: string, s: string): string => (color ? `${code}${s}${ANSI.reset}` : s);
   const lines = [
     "",
-    c.brand("   ██╗    ██╗██╗  ██╗ ██████╗  ██████╗ ██████╗     ███╗   ███╗ ██████╗██████╗ "),
-    c.brand("   ██║    ██║██║  ██║██╔═══██╗██╔═══██╗██╔══██╗    ████╗ ████║██╔════╝██╔══██╗"),
-    c.brand("   ██║ █╗ ██║███████║██║   ██║██║   ██║██████╔╝    ██╔████╔██║██║     ██████╔╝"),
-    c.brand("   ██║███╗██║██╔══██║██║   ██║██║   ██║██╔═══╝     ██║╚██╔╝██║██║     ██╔═══╝ "),
-    c.brand("   ╚███╔███╔╝██║  ██║╚██████╔╝╚██████╔╝██║         ██║ ╚═╝ ██║╚██████╗██║     "),
-    c.brand("    ╚══╝╚══╝ ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝         ╚═╝     ╚═╝ ╚═════╝╚═╝     "),
+    w(ANSI.brand, "   ██╗    ██╗██╗  ██╗ ██████╗  ██████╗ ██████╗     ███╗   ███╗ ██████╗██████╗ "),
+    w(ANSI.brand, "   ██║    ██║██║  ██║██╔═══██╗██╔═══██╗██╔══██╗    ████╗ ████║██╔════╝██╔══██╗"),
+    w(ANSI.brand, "   ██║ █╗ ██║███████║██║   ██║██║   ██║██████╔╝    ██╔████╔██║██║     ██████╔╝"),
+    w(ANSI.brand, "   ██║███╗██║██╔══██║██║   ██║██║   ██║██╔═══╝     ██║╚██╔╝██║██║     ██╔═══╝ "),
+    w(ANSI.brand, "   ╚███╔███╔╝██║  ██║╚██████╔╝╚██████╔╝██║         ██║ ╚═╝ ██║╚██████╗██║     "),
+    w(ANSI.brand, "    ╚══╝╚══╝ ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝         ╚═╝     ╚═╝ ╚═════╝╚═╝     "),
     "",
-    c.brandDim("   ▁▁▁▁▂▂▆▂▁▁▁▁▁▁▁▁▂▂▆▂▁▁▁▁▁▁▁▁▂▂▆▂▁▁▁▁▁▁▁▁▂▂▆▂▁▁▁▁▁▁▁▁▂▂▆▂▁▁▁▁▁▁▁▁▂▂▆▂▁▁▁"),
+    w(ANSI.brandDim, "   ▁▁▁▁▂▂▆▂▁▁▁▁▁▁▁▁▂▂▆▂▁▁▁▁▁▁▁▁▂▂▆▂▁▁▁▁▁▁▁▁▂▂▆▂▁▁▁▁▁▁▁▁▂▂▆▂▁▁▁▁▁▁▁▁▂▂▆▂▁▁▁"),
     "",
-    `   ${c.bold("v" + VERSION)}  ${c.gray("·")}  ${c.white("48 MCP tools")}  ${c.gray("·")}  ${c.white("47 microservices")}  ${c.gray("·")}  ${c.white("remote-ready")}`,
+    `   ${w(ANSI.bold, "v" + VERSION)}  ${w(ANSI.gray, "·")}  ${w(ANSI.white, "48 tools")}  ${w(ANSI.gray, "·")}  ${w(ANSI.white, "47 microservices")}  ${w(ANSI.gray, "·")}  ${w(ANSI.white, "311 endpoints")}`,
     "",
   ];
-  for (const line of lines) console.log(line);
-}
-
-function compactHeader(): void {
-  console.log(`${c.brand("⚡")} ${c.bold("whoop-mcp")} ${c.gray("v" + VERSION)}`);
+  for (const line of lines) console.error(line);
 }
 
 // ── command registry ─────────────────────────────────────────────────────
@@ -162,70 +165,112 @@ const commands: Record<string, Cmd> = {
   // ── Setup ────────────────────────────────────────────────────────────
   auth: {
     group: "Setup",
-    desc: "First-time Whoop (Cognito) login — writes tokens to .env",
-    run: async () => runScript(ROOT, "scripts/cognito_bootstrap"),
-  },
-  refresh: {
-    group: "Setup",
-    desc: "Re-auth when the ~30-day token expires (auto if no SMS MFA; prompts if your account has it) + push to your deployment",
-    usage: "whoop-mcp refresh [--app <fly-app>]",
-    run: async (args) => runScript(ROOT, "scripts/rebootstrap", args),
+    desc: "Log into Whoop + save tokens. Auto-detects first-time vs re-auth and local vs deployed — pushes new tokens to your deployment (Fly/Railway/Cloud Run/custom) when there is one. Run it for setup or when the ~30-day token expires",
+    usage: "whoop-mcp auth [--app <fly-app>]",
+    run: async (args) => runScript(ROOT, "scripts/cognito_bootstrap", args),
   },
 
   // ── Deployed ─────────────────────────────────────────────────────────
   deploy: {
     group: "Deployed",
-    desc: "Deploy to Fly.io (`fly deploy` from the package root)",
-    usage: "whoop-mcp deploy [-- <fly args>]",
-    run: async (args) => run("fly", ["deploy", ...args]),
+    desc: "Re-deploy the current code to your existing deployment (Fly/Railway/Cloud Run)",
+    usage: "whoop-mcp deploy [-- <extra args>]",
+    run: async (args) => {
+      const d = detectDeploy();
+      if (!d) { console.error(c.red("No deployment found. Run `whoop-mcp cloud` to set one up.")); return 1; }
+      switch (d.platform) {
+        case "fly":
+          return run("fly", ["deploy", ...(d.app ? ["-a", d.app] : []), ...args]);
+        case "railway":
+          if (d.app) await run("railway", ["link", "--project", d.app]);
+          return run("railway", ["up", ...args]);
+        case "cloudrun": {
+          const region = d.region ?? "us-west1";
+          return run("gcloud", ["run", "deploy", d.app!, "--source", ".", "--region", region, "--min-instances", "1",
+            ...(d.project ? ["--project", d.project] : []), "--quiet", ...args]);
+        }
+        case "custom":
+          console.log(c.gray("Custom host — rebuild + restart your container yourself (see `whoop-mcp cloud` → Custom)."));
+          return 0;
+        default:
+          console.log(c.gray(`'${d.platform}' has no remote to deploy to.`));
+          return 0;
+      }
+    },
   },
   logs: {
     group: "Deployed",
-    desc: "Tail Fly logs",
-    usage: "whoop-mcp logs [-- <fly args>]",
+    desc: "Tail logs from your deployment (Fly/Railway/Cloud Run)",
+    usage: "whoop-mcp logs [-- <extra args>]",
     run: async (args) => {
-      const app = detectFlyApp();
-      const flyArgs = ["logs", ...(app ? ["-a", app] : []), ...args];
-      return run("fly", flyArgs);
+      const d = detectDeploy();
+      if (!d) { console.error(c.red("No deployment found. Run `whoop-mcp cloud` first.")); return 1; }
+      switch (d.platform) {
+        case "fly":
+          return run("fly", ["logs", ...(d.app ? ["-a", d.app] : []), ...args]);
+        case "railway":
+          if (d.app) await run("railway", ["link", "--project", d.app]);
+          return run("railway", ["logs", ...args]);
+        case "cloudrun": {
+          const region = d.region ?? "us-west1";
+          return run("gcloud", ["run", "services", "logs", "read", d.app!, "--region", region,
+            ...(d.project ? ["--project", d.project] : []), ...args]);
+        }
+        default:
+          console.log(c.gray(`Logs for a ${d.platform} deployment live on your own host — check its dashboard.`));
+          return 0;
+      }
     },
   },
   status: {
     group: "Deployed",
-    desc: "Show Fly status + ping /health",
+    desc: "Show your deployment's status + ping /health",
     run: async () => {
-      const app = detectFlyApp();
-      if (!app) {
-        console.error(c.red("No Fly app detected (no fly.toml, no $FLY_APP)."));
-        return 1;
-      }
-      console.log(c.gray(`→ fly status -a ${app}`));
-      await run("fly", ["status", "-a", app]);
+      const d = detectDeploy();
+      if (!d) { console.error(c.red("No deployment found. Run `whoop-mcp cloud` first.")); return 1; }
+      console.log(`  ${c.gray("platform")}  ${c.bold(d.platform)}${d.app ? `  ${c.gray("·")}  ${d.app}` : ""}`);
+      if (d.url) console.log(`  ${c.gray("url     ")}  ${d.url}`);
       console.log("");
-      console.log(c.gray(`→ GET https://${app}.fly.dev/health`));
-      return ping(`https://${app}.fly.dev/health`);
+      switch (d.platform) {
+        case "fly":
+          if (d.app) { console.log(c.gray(`→ fly status -a ${d.app}`)); await run("fly", ["status", "-a", d.app]); }
+          break;
+        case "railway":
+          if (d.app) await run("railway", ["link", "--project", d.app]);
+          console.log(c.gray("→ railway status")); await run("railway", ["status"]);
+          break;
+        case "cloudrun": {
+          const region = d.region ?? "us-west1";
+          console.log(c.gray(`→ gcloud run services describe ${d.app}`));
+          await run("gcloud", ["run", "services", "describe", d.app!, "--region", region,
+            ...(d.project ? ["--project", d.project] : []),
+            "--format=value(status.url,status.latestReadyRevisionName)"]);
+          break;
+        }
+      }
+      if (!d.url) { console.log(c.gray("(no URL recorded — nothing to ping)")); return 0; }
+      console.log("");
+      console.log(c.gray(`→ GET ${cleanUrl(d.url)}/health`));
+      return ping(`${cleanUrl(d.url)}/health`);
     },
   },
   ping: {
     group: "Deployed",
-    desc: "GET /health on your deployed Fly app",
+    desc: "GET /health on your deployed server",
     run: async () => {
-      const app = detectFlyApp();
-      if (!app) {
-        console.error(c.red("No Fly app detected."));
-        return 1;
-      }
-      return ping(`https://${app}.fly.dev/health`);
+      const d = detectDeploy();
+      if (!d?.url) { console.error(c.red("No deployment URL found. Run `whoop-mcp cloud` first (or set $FLY_APP).")); return 1; }
+      return ping(`${cleanUrl(d.url)}/health`);
     },
   },
 
   // ── Inspect ──────────────────────────────────────────────────────────
   info: {
     group: "Inspect",
-    desc: "Show install path, version, env state, Fly app",
+    desc: "Show install path, version, env state, and your deployment",
     run: async () => {
-      const app = detectFlyApp();
+      const d = detectDeploy();
       const envExists = existsSync(resolve(ROOT, ".env"));
-      const flyTomlExists = existsSync(resolve(ROOT, "fly.toml"));
       const built = existsSync(resolve(ROOT, "dist", "server.js"));
       console.log(`${c.bold("whoop-mcp")}  ${c.gray("v" + VERSION)}`);
       console.log("");
@@ -235,12 +280,16 @@ const commands: Record<string, Cmd> = {
       row("node", process.version);
       row("built (dist/)", built ? c.green("yes") : c.red("no — run `whoop-mcp build`"));
       row(".env", envExists ? c.green("present") : c.red("missing"));
-      row("fly.toml", flyTomlExists ? c.green("present") : c.gray("not in repo"));
-      row("fly app", app ? c.green(app) : c.gray("(none detected)"));
-      if (app) {
-        row("deployed url", `https://${app}.fly.dev`);
-        row("health probe", `https://${app}.fly.dev/health`);
-        row("mcp endpoint", `https://${app}.fly.dev/mcp`);
+      if (d) {
+        row("deployment", c.green(d.platform) + (d.app ? c.gray(` · ${d.app}`) : ""));
+        if (d.region) row("region", d.region);
+        if (d.url) {
+          row("deployed url", cleanUrl(d.url));
+          row("health probe", `${cleanUrl(d.url)}/health`);
+          row("mcp endpoint", `${cleanUrl(d.url)}/mcp`);
+        }
+      } else {
+        row("deployment", c.gray("(none — run `whoop-mcp cloud`)"));
       }
       return 0;
     },
@@ -308,8 +357,8 @@ const commands: Record<string, Cmd> = {
         }, null, 2));
       } else {
         // Claude Desktop doesn't natively support remote MCP — bridge via npx mcp-remote.
-        const app = detectFlyApp();
-        const url = app ? `https://${app}.fly.dev/mcp` : "https://YOUR-APP.fly.dev/mcp";
+        const d = detectDeploy();
+        const url = d?.url ? `${cleanUrl(d.url)}/mcp` : "https://YOUR-SERVER/mcp";
         console.log(JSON.stringify({
           mcpServers: {
             whoop: {
@@ -380,6 +429,24 @@ function detectFlyApp(): string | null {
   }
   return null;
 }
+
+// Where the server is deployed — from the `.whoop-mcp-deploy.json` record written
+// by `whoop-mcp cloud`/`local`, falling back to legacy Fly detection
+// (fly.toml / $FLY_APP) for deploys made before the record existed.
+interface DeployInfo { platform: string; app?: string; url?: string; region?: string; project?: string; }
+function detectDeploy(): DeployInfo | null {
+  const recPath = resolve(ROOT, ".whoop-mcp-deploy.json");
+  if (existsSync(recPath)) {
+    try {
+      const r = JSON.parse(readFileSync(recPath, "utf8")) as DeployInfo;
+      if (r && typeof r.platform === "string") return r;
+    } catch { /* fall through to legacy detection */ }
+  }
+  const app = detectFlyApp();
+  if (app) return { platform: "fly", app, url: `https://${app}.fly.dev` };
+  return null;
+}
+const cleanUrl = (u: string): string => u.replace(/\/+$/, "");
 
 function run(cmd: string, args: string[], opts: SpawnOptions = {}): Promise<number> {
   return new Promise((res) => {
@@ -478,8 +545,18 @@ function printHelp(): void {
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
 
+  // Ctrl-C kills the CLI from anywhere — during a spinner, a subprocess, or
+  // between prompts — and restores the cursor a spinner/menu may have hidden.
+  // (Ctrl-C inside a text prompt is also caught in ui.ts's ask(), where readline
+  // intercepts SIGINT before it would reach the process.)
+  process.on("SIGINT", () => { process.stderr.write("\x1b[?25h"); process.exit(130); });
+
+  // Banner on EVERY invocation, at the very top. It goes to stderr (see
+  // printBanner), so even `start` (MCP stdio), `dev`, and `version` show it
+  // without corrupting their stdout.
+  printBanner();
+
   if (argv.length === 0) {
-    printBanner();
     printHelp();
     return 0;
   }
@@ -494,10 +571,6 @@ async function main(): Promise<number> {
     console.error(`Run ${c.bold("whoop-mcp help")} to see all commands.`);
     return 1;
   }
-
-  // `start` must keep stdout clean for the MCP protocol.
-  // `version` is meant to be parsed by tools (just print the number).
-  if (name !== "start" && name !== "version") compactHeader();
 
   return cmd.run(argv.slice(1));
 }

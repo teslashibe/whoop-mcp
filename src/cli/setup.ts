@@ -1,19 +1,19 @@
 // Guided setup flows: `whoop-mcp cloud` (server-hosted, OAuth, recommended) and
 // `whoop-mcp local` (stdio on this machine). These are the headline commands.
 //
-// Reality of multi-platform automation: only Fly is live-tested by the author.
-// Railway / Cloud Run run their documented CLI commands but, because
-// their deploy-URL output formats vary and I can't verify them, the flow asks
-// you to paste the resulting URL rather than scraping it. Custom is a printed
-// guide for any other platform or your own server. Either way it's one command
-// that walks you to a working, Claude-connected deployment.
-import { existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+// Fly, Railway, and Cloud Run are all fully CLI-automated and tested end-to-end:
+// the flow installs the host CLI if missing, logs you in, deploys, auto-detects
+// the resulting URL, sets PUBLIC_URL, and verifies /health + OAuth are live — no
+// copy-paste. Custom is a printed Docker guide for any other host or your own
+// server. Either way it's one command to a working, Claude-connected deployment.
+import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import {
-  c, run, capture, commandExists, genToken, genPassword, copyToClipboard, httpGet,
-  prompt, promptYesNo, promptChoice, step, closePrompts,
+  c, run, capture, captureAsync, commandExists, genToken, genPassword, copyToClipboard, httpGet,
+  prompt, promptYesNo, select, confirmStep, step, closePrompts,
+  withSpinner, spin, pause, maskArgs,
   runScript, ensureCli, openUrl,
 } from "./ui.js";
 
@@ -42,11 +42,14 @@ function upsertEnv(root: string, updates: Record<string, string>): void {
   writeFileSync(p, lines.join("\n"));
 }
 
-// Record of where we deployed, so `refresh` can push to the right place later.
+// Record of where we deployed, so `auth` can push rotated tokens to the right
+// place later (or know it's a local install with nothing remote to update).
 interface DeployRecord {
-  platform: string;
-  app: string;
-  url: string;
+  platform: string;          // fly | railway | cloudrun | custom | local
+  app?: string;              // app/project/service name (none for local)
+  url?: string;
+  region?: string;           // Cloud Run needs this to target the service
+  project?: string;          // Cloud Run GCP project (for logs/status/refresh)
 }
 function writeDeployRecord(root: string, rec: DeployRecord): void {
   writeFileSync(resolve(root, ".whoop-mcp-deploy.json"), JSON.stringify(rec, null, 2));
@@ -73,23 +76,26 @@ async function ensureAuth(root: string): Promise<boolean> {
     const reuse = await promptYesNo("Found existing Whoop tokens in .env. Reuse them?", true);
     if (reuse) return true;
   }
-  // Need email + password in .env for the bootstrap script.
+  // Need email + password in .env for the auth (cognito_bootstrap) script.
   if (!env.WHOOP_EMAIL) {
-    const email = await prompt("Your Whoop account email");
-    if (!email) { console.log(c.red("Email required.")); return false; }
+    const email = await promptRequired("Your Whoop account email", {
+      validate: (v) => (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) ? null : "That doesn't look like an email address — try again."),
+    });
     upsertEnv(root, { WHOOP_EMAIL: email });
   }
   if (!readEnv(root).WHOOP_PASSWORD) {
-    const pw = await prompt("Your Whoop account password (stored only in local .env, used once)");
-    if (!pw) { console.log(c.red("Password required.")); return false; }
+    const pw = await promptRequired("Your Whoop account password (stored only in local .env, used once)");
     upsertEnv(root, { WHOOP_PASSWORD: pw });
   }
   console.log(c.gray("Authenticating with Whoop (you'll get an SMS code if your account has MFA)…"));
-  // closePrompts so the bootstrap script owns stdin for its own SMS prompt.
+  // closePrompts so the auth script owns stdin for its own SMS prompt.
   closePrompts();
   // runScript prefers the compiled dist/ (works in a published install with no
-  // tsx), falling back to tsx on source for a dev checkout.
-  const code = await runScript(root, "scripts/cognito_bootstrap");
+  // tsx), falling back to tsx on source for a dev checkout. TOKENS_ONLY: the
+  // guided flow handles the deploy itself, so the auth script must NOT push.
+  const code = await runScript(root, "scripts/cognito_bootstrap", [], {
+    env: { ...process.env, WHOOP_AUTH_TOKENS_ONLY: "1" },
+  });
   if (code !== 0) { console.log(c.red("Auth failed.")); return false; }
   return true;
 }
@@ -165,34 +171,21 @@ const railwayPrereqs: Prereq[] = [
   },
 ];
 
-// gcloud needs more than a CLI: install → auth → project → billing.
-async function selectOrCreateGcpProject(): Promise<boolean> {
-  const existing = capture("gcloud", ["projects", "list", "--format=value(projectId)"]).stdout.trim().split("\n").filter(Boolean);
-  const choices = [...existing.map((p) => `Use existing project: ${p}`), "Create a new project"];
-  const idx = existing.length > 0 ? await promptChoice("Which GCP project?", choices) : choices.length - 1;
-  let project: string;
-  if (idx < existing.length) {
-    project = existing[idx]!;
-  } else {
-    project = await prompt("New project ID (lowercase, 6-30 chars, globally unique)", `whoop-mcp-${genToken().slice(0, 6)}`);
-    console.log(c.gray(`    $ gcloud projects create ${project}`));
-    if (await run("gcloud", ["projects", "create", project]) !== 0) { console.log(c.red("  Project creation failed.")); return false; }
-  }
-  return (await run("gcloud", ["config", "set", "project", project])) === 0;
-}
-
+// gcloud needs more than a CLI: install → auth → account → project → billing.
+// The CLI install + "at least one account" are pure prerequisites (below). The
+// *which account / which project* decisions are choices the user must own, so
+// they live in chooseGcloudTarget() and are offered on every run — never silently
+// inheriting whatever happens to be active.
 const gcloudPrereqs: Prereq[] = [
   {
     label: "gcloud SDK installed",
     check: () => commandExists("gcloud"),
     ensure: async () => {
-      if (commandExists("brew") && await promptYesNo("Install the gcloud SDK via Homebrew (brew install --cask google-cloud-sdk)?", true)) {
+      if (commandExists("brew") && await confirmStep("Install the gcloud SDK via Homebrew?", { cmd: "brew install --cask google-cloud-sdk", detail: "downloads + installs Google's CLI (~hundreds of MB)", defaultYes: true })) {
         await run("brew", ["install", "--cask", "google-cloud-sdk"]);
       }
       if (!commandExists("gcloud")) {
-        console.log(c.gray("  Or install with the official script (follow its prompts):"));
-        console.log(c.gray("    $ curl https://sdk.cloud.google.com | bash"));
-        if (await promptYesNo("Run the gcloud install script now?", true)) {
+        if (await confirmStep("Install gcloud with Google's official script instead?", { cmd: "curl https://sdk.cloud.google.com | bash", detail: "runs a remote install script (follow its prompts)", defaultYes: true })) {
           await run("sh", ["-c", "curl https://sdk.cloud.google.com | bash"]);
         }
       }
@@ -206,30 +199,161 @@ const gcloudPrereqs: Prereq[] = [
   {
     label: "authenticated with Google",
     check: () => capture("gcloud", ["auth", "list", "--filter=status:ACTIVE", "--format=value(account)"]).stdout.trim().length > 0,
-    ensure: async () => (await run("gcloud", ["auth", "login"])) === 0,
-  },
-  {
-    label: "GCP project selected",
-    check: () => { const p = capture("gcloud", ["config", "get-value", "project"]).stdout.trim(); return p.length > 0 && p !== "(unset)"; },
-    ensure: () => selectOrCreateGcpProject(),
-  },
-  {
-    label: "billing enabled (Cloud Run requires it)",
-    check: () => {
-      const p = capture("gcloud", ["config", "get-value", "project"]).stdout.trim();
-      const b = capture("gcloud", ["billing", "projects", "describe", p, "--format=value(billingEnabled)"]);
-      return b.code === 0 && /true/i.test(b.stdout);
-    },
     ensure: async () => {
-      const p = capture("gcloud", ["config", "get-value", "project"]).stdout.trim();
-      console.log(c.yellow("  Cloud Run needs billing (the free tier still requires a card on file)."));
-      console.log(c.gray(`  Enable it: https://console.cloud.google.com/billing/linkedaccount?project=${p}`));
-      console.log(c.gray(`  Or: gcloud billing accounts list  →  gcloud billing projects link ${p} --billing-account=ACCT`));
-      await promptYesNo("Press Enter once billing is enabled", true);
-      return true;
+      if (!(await confirmStep("Sign into Google in your browser?", { cmd: "gcloud auth login", defaultYes: true }))) return false;
+      return (await run("gcloud", ["auth", "login"])) === 0;
     },
   },
 ];
+
+// Pick the Google account to deploy under (every run). gcloud can hold several
+// authenticated accounts at once, so switching between EXISTING ones needs no
+// logout — just `gcloud config set account`. Adding a new one runs `gcloud auth
+// login` (the browser opens right here in the flow). Loops so a decline returns
+// to the menu; verifies the active account before returning.
+async function chooseGcloudAccount(): Promise<boolean> {
+  for (;;) {
+    const all = (await withSpinner("listing Google accounts", () => captureAsync("gcloud", ["auth", "list", "--format=value(account)"]))).stdout.trim().split("\n").filter(Boolean);
+    const active = (await captureAsync("gcloud", ["auth", "list", "--filter=status:ACTIVE", "--format=value(account)"])).stdout.trim();
+    const choices = all.map((a) => ({ label: a, hint: a === active ? "active" : undefined }));
+    choices.push({ label: "Sign into a different Google account…", hint: undefined });
+    const idx = await select("Which Google account should own this deployment?", choices, { defaultIndex: Math.max(0, all.indexOf(active)) });
+    if (idx === all.length) {
+      // Add an account — the browser sign-in happens right here, in-process.
+      if (!(await confirmStep("Open a browser to sign into another Google account?", { cmd: "gcloud auth login", detail: "the browser sign-in happens right here in this flow", defaultYes: true }))) continue;
+      if ((await run("gcloud", ["auth", "login"])) !== 0) {
+        console.log(c.red("  ✗ Google sign-in didn't complete."));
+        if (!(await promptYesNo("  Try again?", true))) return false;
+      }
+      continue; // re-list — the new account is now active; confirm it on the next pass
+    }
+    const picked = all[idx]!;
+    if (picked !== active) {
+      const set = await withSpinner(`switching to ${picked}`, () => captureAsync("gcloud", ["config", "set", "account", picked]));
+      if (set.code !== 0) { console.log(c.red(`  ✗ couldn't switch to ${picked}: ${lastLine(set)}`)); continue; }
+    }
+    console.log(c.green(`  ✓ deploying as ${picked}`));
+    return true;
+  }
+}
+
+// Pick (or create) the GCP project. Marks the current one; creating a brand-new
+// project is gated behind an explicit confirm (it's a real, billable resource).
+async function chooseGcloudProject(): Promise<boolean> {
+  const current = (await captureAsync("gcloud", ["config", "get-value", "project"])).stdout.trim().replace(/^\(unset\)$/, "");
+  const projects = (await withSpinner("listing GCP projects", () => captureAsync("gcloud", ["projects", "list", "--format=value(projectId)"]))).stdout.trim().split("\n").filter(Boolean);
+  const choices = projects.map((p) => ({ label: p, hint: p === current ? "current" : undefined }));
+  choices.push({ label: "Create a new project…", hint: undefined });
+  const idx = await select("Which GCP project should host the deployment?", choices, { defaultIndex: Math.max(0, projects.indexOf(current)) });
+  let project: string;
+  if (idx === projects.length) {
+    let fresh = `whoop-mcp-${genToken().slice(0, 6)}`;
+    project = (await prompt("New project ID (lowercase, 6-30 chars, globally unique)", fresh)).trim() || fresh;
+    // Retry with a new ID if creation fails (taken/invalid ID), surfacing the error.
+    for (;;) {
+      if (!(await confirmStep(`Create a new Google Cloud project '${project}'?`, { cmd: `gcloud projects create ${project}`, detail: "creates a real GCP project on your account", defaultYes: true }))) return false;
+      if ((await run("gcloud", ["projects", "create", project])) === 0) break;
+      console.log(c.red("  ✗ project creation failed — the error is shown above (usually the ID is taken or malformed)."));
+      if (!(await promptYesNo("  Try a different project ID?", true))) return false;
+      fresh = `whoop-mcp-${genToken().slice(0, 6)}`;
+      project = (await prompt("New project ID (lowercase, 6-30 chars, globally unique)", fresh)).trim() || fresh;
+    }
+  } else {
+    project = projects[idx]!;
+  }
+  return (await withSpinner(`selecting ${project}`, () => captureAsync("gcloud", ["config", "set", "project", project]))).code === 0;
+}
+
+// Cloud Run requires billing on the chosen project. If you already have a billing
+// account, we LINK it from the CLI right here, in-process. Only *creating* a
+// billing account (adding a payment method) needs the web console — gcloud has no
+// CLI for that anywhere — so that single step is handed off, with the page auto-opened.
+async function ensureGcloudBilling(): Promise<boolean> {
+  const p = (await captureAsync("gcloud", ["config", "get-value", "project"])).stdout.trim();
+  const b = await withSpinner("checking billing", () => captureAsync("gcloud", ["billing", "projects", "describe", p, "--format=value(billingEnabled)"]));
+  if (b.code === 0 && /true/i.test(b.stdout)) { console.log(c.green("  ✓ billing enabled")); return true; }
+
+  // Link an existing OPEN billing account directly via the CLI (in-process).
+  const accts = (await withSpinner("listing your billing accounts", () => captureAsync("gcloud", ["billing", "accounts", "list", "--filter=open=true", "--format=value(name)"]))).stdout.trim().split("\n").filter(Boolean);
+  if (accts.length > 0) {
+    const choices = accts.map((a) => ({ label: a }));
+    choices.push({ label: "None of these — set one up in the console" });
+    const idx = await select("Link which billing account to this project?", choices);
+    if (idx < accts.length) {
+      const acct = accts[idx]!;
+      if (await confirmStep(`Link billing account ${acct} to ${p}?`, { cmd: `gcloud billing projects link ${p} --billing-account=${acct}`, detail: "enables billing on the project — done right here, no console", defaultYes: true })) {
+        const link = await withSpinner("linking billing", () => captureAsync("gcloud", ["billing", "projects", "link", p, "--billing-account", acct]));
+        if (link.code === 0) { console.log(c.green("  ✓ billing linked")); return true; }
+        console.log(c.red(`  ✗ couldn't link billing: ${lastLine(link)}`));
+      }
+    }
+  }
+
+  // No usable billing account → the console is the only place to add a payment method.
+  const url = `https://console.cloud.google.com/billing/linkedaccount?project=${p}`;
+  console.log(c.yellow("  Add a payment method in the console (creating a billing account has no CLI)."));
+  console.log(c.gray(`  Opening: ${url}`));
+  openUrl(url);
+  await promptYesNo("  Press Enter once billing is enabled", true);
+  return true;
+}
+
+// The full Cloud Run target picker: account → project → billing. Always offered.
+async function chooseGcloudTarget(): Promise<boolean> {
+  console.log(c.gray("  Choose the account + project to deploy into:"));
+  if (!(await chooseGcloudAccount())) return false;
+  if (!(await chooseGcloudProject())) return false;
+  return ensureGcloudBilling();
+}
+
+// Fly target picker: confirm the logged-in account or switch to another. The
+// switch (logout + login) runs entirely in-process — `fly auth login` opens the
+// browser right here. Loops on decline; verifies + shows the account afterward.
+async function chooseFlyAccount(): Promise<boolean> {
+  const fly = commandExists("fly") ? "fly" : "flyctl";
+  for (;;) {
+    const who = (await withSpinner("checking Fly account", () => captureAsync(fly, ["auth", "whoami"]))).stdout.trim();
+    const idx = await select("Deploy under which Fly account?", [
+      { label: who || "(current account)", hint: "current" },
+      { label: "Switch to a different account…" },
+    ]);
+    if (idx === 0) { console.log(c.green(`  ✓ deploying as ${who || "(current account)"}`)); return true; }
+    if (!(await confirmStep("Log out of Fly and sign in as a different account?", { cmd: `${fly} auth logout && ${fly} auth login`, detail: "the browser login happens right here in this flow", defaultYes: true }))) continue;
+    await run(fly, ["auth", "logout"]);
+    if ((await run(fly, ["auth", "login"])) !== 0) {
+      console.log(c.red("  ✗ Fly login didn't complete."));
+      if (!(await promptYesNo("  Try again?", true))) return false;
+      continue;
+    }
+    const now = (await withSpinner("confirming Fly account", () => captureAsync(fly, ["auth", "whoami"]))).stdout.trim();
+    console.log(c.green(`  ✓ now signed in to Fly as ${now || "(unknown)"}`));
+    return true;
+  }
+}
+
+// Railway target picker: confirm the logged-in account or switch to another.
+// `railway login` runs in-process (browser / pairing happens right here). Loops
+// on decline; verifies + shows the account afterward.
+async function chooseRailwayAccount(): Promise<boolean> {
+  for (;;) {
+    const who = (await withSpinner("checking Railway account", () => captureAsync("railway", ["whoami"]))).stdout.trim().replace(/\s+/g, " ");
+    const idx = await select("Deploy under which Railway account?", [
+      { label: who || "(current account)", hint: "current" },
+      { label: "Switch to a different account…" },
+    ]);
+    if (idx === 0) { console.log(c.green(`  ✓ deploying as ${who || "(current account)"}`)); return true; }
+    if (!(await confirmStep("Log out of Railway and log in as a different account?", { cmd: "railway logout && railway login", detail: "the login happens right here in this flow", defaultYes: true }))) continue;
+    await run("railway", ["logout"]);
+    if ((await run("railway", ["login"])) !== 0) {
+      console.log(c.red("  ✗ Railway login didn't complete."));
+      if (!(await promptYesNo("  Try again?", true))) return false;
+      continue;
+    }
+    const now = (await withSpinner("confirming Railway account", () => captureAsync("railway", ["whoami"]))).stdout.trim().replace(/\s+/g, " ");
+    console.log(c.green(`  ✓ now signed in to Railway as ${now || "(unknown)"}`));
+    return true;
+  }
+}
 
 // ── LOCAL flow ───────────────────────────────────────────────────────────────
 export async function runLocalSetup(root: string): Promise<number> {
@@ -243,12 +367,15 @@ export async function runLocalSetup(root: string): Promise<number> {
   step(2, TOTAL, "Whoop authentication");
   if (!(await ensureAuth(root))) return 1;
   console.log(c.green("  ✓ tokens in .env"));
+  // Record this as a local install (overriding any stale cloud record) so
+  // `auth` knows the tokens just go to .env — no remote to push to.
+  writeDeployRecord(root, { platform: "local" });
 
   step(3, TOTAL, "Wire into your AI client");
-  const client = await promptChoice("Which client?", [
-    "Claude Desktop (write config automatically)",
-    "Claude Code (print the one-line command)",
-    "Just show me the config — I'll paste it",
+  const client = await select("Which client?", [
+    { label: "Claude Desktop", hint: "write the config automatically" },
+    { label: "Claude Code", hint: "run/print the one-line command" },
+    { label: "Just show me the config", hint: "I'll paste it myself" },
   ]);
 
   let wired = false;
@@ -282,6 +409,9 @@ export async function runLocalSetup(root: string): Promise<number> {
     }
     merged.mcpServers = { ...(merged.mcpServers ?? {}), whoop: entry };
     if (await promptYesNo(`Write the 'whoop' server into ${cfgPath}?`, true)) {
+      // Create the parent dir if Claude Desktop has never been opened (its
+      // config dir won't exist yet) — otherwise writeFileSync throws ENOENT.
+      mkdirSync(dirname(cfgPath), { recursive: true });
       writeFileSync(cfgPath, JSON.stringify(merged, null, 2));
       console.log(c.green("  ✓ Claude Desktop config updated"));
       console.log(c.yellow("  → Quit and reopen Claude Desktop to load it."));
@@ -330,23 +460,31 @@ export async function runCloudSetup(root: string): Promise<number> {
   console.log(c.green("  ✓ tokens ready"));
 
   step(2, TOTAL, "Choose a host");
-  const platformIdx = await promptChoice("Where should the server run?", [
-    `Fly.io          ${c.gray("— fully automated + tested. ~$2/mo (no free tier).")}`,
-    `Railway         ${c.gray("— $5/mo credit, always-on. CLI-driven.")}`,
-    `Google Cloud Run ${c.gray("— generous free tier, scales to zero. Needs gcloud SDK.")}`,
-    `Custom / own server ${c.gray("— step-by-step Docker instructions, no automation.")}`,
+  const platformIdx = await select("Where should the server run?", [
+    { label: "Fly.io", hint: "fast-booting micro-VMs on a global edge network" },
+    { label: "Railway", hint: "polished PaaS, instant deploys + a clean dashboard" },
+    { label: "Google Cloud Run", hint: "Google Cloud's serverless containers, one instance kept warm" },
+    { label: "Custom / own server", hint: "bring your own Docker host — a VPS, Render, a home server" },
   ]);
   const platforms = ["fly", "railway", "cloudrun", "custom"] as const;
   const platform = platforms[platformIdx]!;
 
-  // Per-host prerequisites (install the CLI, log in, and for gcloud pick/create a
-  // project + billing) — guided, auto-skipping whatever you already have, BEFORE
-  // we generate secrets or deploy. Returns to the main flow when satisfied.
+  // Per-host prerequisites (install the CLI, log in) — guided, auto-skipping
+  // whatever you already have, BEFORE we generate secrets or deploy.
   const hostPrereqs = platform === "fly" ? flyPrereqs
     : platform === "railway" ? railwayPrereqs
     : platform === "cloudrun" ? gcloudPrereqs
     : [];
   if (hostPrereqs.length && !(await preflight(hostPrereqs))) return 1;
+
+  // Account / project selection — always offered, never silently inheriting
+  // whatever account or GCP project happens to be active. (Custom self-host has
+  // no account concept.)
+  const targetOk = platform === "fly" ? await chooseFlyAccount()
+    : platform === "railway" ? await chooseRailwayAccount()
+    : platform === "cloudrun" ? await chooseGcloudTarget()
+    : true;
+  if (!targetOk) { console.log(c.red("  Couldn't set the deploy target.")); closePrompts(); return 1; }
 
   step(3, TOTAL, "Generate secrets");
   const mcpToken = genToken();
@@ -407,7 +545,15 @@ export async function runCloudSetup(root: string): Promise<number> {
   if (!ok) {
     console.log(c.yellow("  Couldn't confirm the OAuth endpoints yet (the host may still be starting). Give it a minute, then run `whoop-mcp ping`."));
   }
-  writeDeployRecord(root, { platform, app: appName, url });
+  // Use ctx.appName, not the local appName: a Fly name conflict may have changed
+  // it during deploy, and `auth` must push to the app that was actually used.
+  const extra: Partial<DeployRecord> = {};
+  if (platform === "cloudrun") {
+    extra.region = "us-west1";
+    const proj = capture("gcloud", ["config", "get-value", "project"]).stdout.trim();
+    if (proj) extra.project = proj;
+  }
+  writeDeployRecord(root, { platform, app: ctx.appName, url, ...extra });
 
   step(6, TOTAL, "Connect to Claude");
   printConnectInstructions(url, password);
@@ -422,17 +568,19 @@ async function verifyDeployment(baseUrl: string): Promise<boolean> {
   // start fails in ~3s instead of hanging the full 12s default, and a tight 1.5s
   // interval detects readiness within ~1.5s of the host coming up. (Previously a
   // 12s timeout × 3s sleep × 10 made this feel like ~3 minutes.)
-  const deadline = Date.now() + 90_000;
+  const start = Date.now();
+  const deadline = start + 90_000;
   let healthy = false;
-  let announced = false;
+  // Live elapsed counter so a slow DNS-propagation / cold-start wait visibly ticks.
+  const s = spin(() => `waiting for ${root} (DNS + first boot) — ${Math.floor((Date.now() - start) / 1000)}s`);
   while (Date.now() < deadline) {
     const health = await httpGet(`${root}/health`, 3000);
     if (health.status === 200) { healthy = true; break; }
-    if (!announced) { console.log(c.gray(`  waiting for ${root} (DNS + first boot)…`)); announced = true; }
     await new Promise((r) => setTimeout(r, 1500));
   }
+  s.stop();
   console.log(`  /health: ${healthy ? c.green("200 ✓") : c.red("timeout")}`);
-  const prm = await httpGet(`${root}/.well-known/oauth-protected-resource/mcp`, 5000);
+  const prm = await withSpinner("checking OAuth metadata", () => httpGet(`${root}/.well-known/oauth-protected-resource/mcp`, 5000));
   const prmOk = prm.status === 200 && prm.body.includes("/mcp");
   console.log(`  OAuth metadata: ${prmOk ? c.green("✓") : c.red("not found")}`);
   return healthy && prmOk;
@@ -459,18 +607,96 @@ function setSummary(env: Record<string, string>): void {
   console.log(c.gray("  env to set: " + Object.keys(env).join(", ")));
 }
 
-// FLY — fully automated + tested.
+// ── shared failure handling ──────────────────────────────────────────────────
+// The last meaningful line of a captured (spinner-wrapped) command's output —
+// so when a step that DIDN'T stream live fails, we can still show WHY.
+function lastLine(r: { stdout: string; stderr: string }): string {
+  const lines = (r.stderr + "\n" + r.stdout).split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines.length ? lines[lines.length - 1]! : "unknown error";
+}
+
+// Run an inherited-stdio action (its error is already printed on screen by the
+// tool) and, on failure, let the user retry it or give up. Loops until success
+// or the user declines. Returns true once it succeeds.
+async function runWithRetry(desc: string, action: () => Promise<number>): Promise<boolean> {
+  for (;;) {
+    console.log(c.gray(`  ${desc}…`));
+    if ((await action()) === 0) return true;
+    console.log(c.red("  ✗ that failed — the error is shown above."));
+    if (!(await promptYesNo("  Retry it?", true))) return false;
+  }
+}
+
+// Ask for a public URL, re-asking (with a clear reason) on empty or malformed
+// input instead of bailing the whole flow. Accepts a bare domain (prepends
+// https://) and strips trailing slashes. Ctrl-C is the only way out.
+async function promptUrl(message: string): Promise<string> {
+  const tty = Boolean(process.stdin.isTTY);
+  for (;;) {
+    let url = (await prompt(message)).trim();
+    if (url) {
+      if (!/^https?:\/\//i.test(url)) url = "https://" + url; // accept a bare domain
+      if (/^https?:\/\/[^/.\s]+\.[^/\s]+/.test(url)) return url.replace(/\/+$/, "");
+      console.log(c.red(`  '${url}' isn't a valid URL (e.g. https://whoop.example.com) — try again.`));
+    } else {
+      console.log(c.red("  A URL is required — paste it, or press Ctrl-C to cancel."));
+    }
+    // No interactive terminal (piped/EOF) → "" forever; don't spin, just stop.
+    if (!tty) { console.log(c.red("  (no terminal to re-ask on — stopping.)")); process.exit(1); }
+  }
+}
+
+// Ask for a required free-text value, re-asking (with a reason) on empty or
+// invalid input instead of bailing the flow. Optional validator returns an error
+// string to show + re-ask, or null when the value is good. Ctrl-C is the way out.
+async function promptRequired(message: string, opts: { validate?: (v: string) => string | null } = {}): Promise<string> {
+  const tty = Boolean(process.stdin.isTTY);
+  for (;;) {
+    const v = (await prompt(message)).trim();
+    if (v) {
+      const err = opts.validate ? opts.validate(v) : null;
+      if (!err) return v;
+      console.log(c.red(`  ${err}`));
+    } else {
+      console.log(c.red("  Required — enter a value, or press Ctrl-C to cancel."));
+    }
+    if (!tty) { console.log(c.red("  (no terminal to re-ask on — stopping.)")); process.exit(1); }
+  }
+}
+
+// FLY — deploys as fast-booting micro-VMs via flyctl.
+
+// Create the Fly app, retrying with a new name when the chosen one is taken by
+// ANOTHER account (Fly app names are globally unique). If you already own an app
+// by that name, reuse it. Mutates ctx.appName to whatever name actually worked.
+async function createFlyApp(fly: string, ctx: DeployCtx): Promise<boolean> {
+  if (!(await confirmStep(`Create Fly app '${ctx.appName}'?`, { cmd: `fly apps create ${ctx.appName}`, detail: "reserves the name + URL on your Fly account", defaultYes: true }))) return false;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const create = await withSpinner(`creating ${ctx.appName}`, () => captureAsync(fly, ["apps", "create", ctx.appName, "--json"]));
+    if (create.code === 0) { console.log(c.green(`  ✓ created ${ctx.appName}`)); return true; }
+    // Already on YOUR account? (re-running cloud, or a half-finished prior attempt) → reuse it.
+    const mine = await withSpinner("checking your Fly apps", () => captureAsync(fly, ["apps", "list"]));
+    if (new RegExp(`(^|\\s)${ctx.appName}(\\s|$)`, "m").test(mine.stdout)) {
+      console.log(c.gray(`  '${ctx.appName}' already exists on your account — reusing it.`));
+      return true;
+    }
+    // Taken by someone else (or another error): SHOW it, then retry with a new name.
+    console.log(c.red(`  ✗ couldn't create '${ctx.appName}': ${lastLine(create)}`));
+    console.log(c.yellow("  Fly app names are globally unique, so that one's unavailable — pick another."));
+    const fresh = `whoop-mcp-${genToken().slice(0, 6)}`;
+    ctx.appName = (await prompt("New app name (Enter = unique suggestion)", fresh)).trim() || fresh;
+  }
+  console.log(c.red("  Too many name attempts — aborting the Fly deploy."));
+  return false;
+}
+
 async function deployFly(ctx: DeployCtx): Promise<string | null> {
   const fly = commandExists("fly") ? "fly" : "flyctl";
+
+  if (!(await createFlyApp(fly, ctx))) return null;
   const url = `https://${ctx.appName}.fly.dev`;
   const env = { ...ctx.env, PUBLIC_URL: url };
 
-  // Create the app (idempotent-ish: ignore "already exists").
-  const create = capture(fly, ["apps", "create", ctx.appName, "--json"]);
-  if (create.code !== 0 && !/already|taken/i.test(create.stderr + create.stdout)) {
-    console.log(c.red(`  Couldn't create app '${ctx.appName}': ${create.stderr.trim() || create.stdout.trim()}`));
-    return null;
-  }
   // Minimal fly.toml so `fly deploy` is non-interactive (builds the Dockerfile).
   writeFileSync(resolve(ctx.root, "fly.toml"), [
     `app = "${ctx.appName}"`,
@@ -481,31 +707,45 @@ async function deployFly(ctx: DeployCtx): Promise<string | null> {
     `[http_service]`,
     `  internal_port = 3000`,
     `  force_https = true`,
-    `  auto_stop_machines = "stop"`,
+    `  # Keep one machine warm so the connector never cold-starts — the first`,
+    `  # request after an auto-stop would otherwise fail while the VM boots (~10s).`,
+    `  auto_stop_machines = "suspend"`,
     `  auto_start_machines = true`,
-    `  min_machines_running = 0`,
+    `  min_machines_running = 1`,
     ``,
   ].join("\n"));
-  // Set secrets (staged; applied on deploy).
+  // Set secrets (staged; applied on deploy) — surface the error if it fails.
   const secretArgs = Object.entries(env).map(([k, v]) => `${k}=${v}`);
-  console.log(c.gray("  setting secrets…"));
-  if (await run(fly, ["secrets", "set", ...secretArgs, "--app", ctx.appName, "--stage"]) !== 0) {
-    console.log(c.yellow("  (secrets --stage failed; retrying without --stage)"));
-    await run(fly, ["secrets", "set", ...secretArgs, "--app", ctx.appName]);
+  const stage = await withSpinner("staging secrets", () => captureAsync(fly, ["secrets", "set", ...secretArgs, "--app", ctx.appName, "--stage"], { cwd: ctx.root }));
+  if (stage.code !== 0) {
+    console.log(c.yellow(`  staging secrets failed (${lastLine(stage)}) — applying directly`));
+    const direct = await withSpinner("setting secrets", () => captureAsync(fly, ["secrets", "set", ...secretArgs, "--app", ctx.appName], { cwd: ctx.root }));
+    if (direct.code !== 0) console.log(c.red(`  ✗ couldn't set secrets: ${lastLine(direct)}`));
   }
-  console.log(c.gray("  deploying (builds the Dockerfile, ~1-2 min)…"));
-  if (await run(fly, ["deploy", "--app", ctx.appName, "--ha=false"], { cwd: ctx.root }) !== 0) return null;
+  // Build + deploy — error visible (inherited stdio) + retry-on-failure.
+  if (!(await confirmStep("Build + deploy to Fly now?", { cmd: `fly deploy --app ${ctx.appName}`, detail: "builds the Dockerfile and starts a billable machine (~1-2 min)", defaultYes: true }))) return null;
+  if (!(await runWithRetry(`deploying ${ctx.appName} (builds the Dockerfile, ~1-2 min)`, () => run(fly, ["deploy", "--app", ctx.appName, "--ha=false"], { cwd: ctx.root })))) return null;
   return url;
 }
 
-// Shared "assisted" deploy for platforms I can't live-test: run the documented
-// commands, then ask the user to paste the resulting URL (robust vs. parsing).
+// Shared "assisted" deploy used by Railway + Cloud Run: install/login the host
+// CLI, run its deploy commands (each retryable), auto-detect the deployed URL
+// (falling back to a paste only if detection fails), then set PUBLIC_URL for OAuth.
 async function assistedDeploy(opts: {
   cliName: string;
   install: { brewPkg?: string; npmPkg?: string; scriptUrl?: string; manualHint: string };
   loginCheck: () => boolean;
   loginCmd: () => Promise<number>;
-  steps: Array<{ desc: string; cmd?: [string, string[]]; run?: () => Promise<boolean>; retries?: number }>;
+  steps: Array<{
+    desc: string;
+    cmd?: [string, string[]];
+    run?: () => Promise<boolean>;
+    retries?: number;
+    // Sensitive steps (IAM, API enablement, billable deploys) gate behind a
+    // confirm. `skippable` steps continue when declined (e.g. an IAM grant that
+    // may already be in place); non-skippable ones abort the whole deploy.
+    confirm?: { summary: string; detail?: string; cmd?: string; defaultYes?: boolean; skippable?: boolean };
+  }>;
   getUrl?: () => Promise<string | null>;
   setPublicUrlCmds: (url: string) => Array<[string, string[]]>;
   ctx: DeployCtx;
@@ -519,44 +759,73 @@ async function assistedDeploy(opts: {
   }
   setSummary(opts.ctx.env);
   for (const s of opts.steps) {
+    if (s.confirm) {
+      const proceed = await confirmStep(s.confirm.summary, s.confirm);
+      if (!proceed) {
+        if (s.confirm.skippable) { console.log(c.gray(`  ↷ skipped: ${s.desc}`)); continue; }
+        console.log(c.yellow("  Cancelled — this step is required, stopping here.")); return null;
+      }
+    }
     console.log(c.gray(`  → ${s.desc}`));
     const tries = (s.retries ?? 0) + 1;
     let ok = false;
     for (let i = 0; i < tries && !ok; i++) {
-      if (i > 0) { console.log(c.yellow(`    API hiccup — retry ${i}/${s.retries}…`)); await new Promise((r) => setTimeout(r, 2500)); }
+      if (i > 0) { console.log(c.yellow(`    API hiccup — retry ${i}/${s.retries}`)); await pause(2500, "backing off before retry"); }
       if (s.run) ok = await s.run();
-      else { console.log(c.gray(`    $ ${s.cmd![0]} ${s.cmd![1].join(" ")}`)); ok = (await run(s.cmd![0], s.cmd![1], { cwd: opts.ctx.root })) === 0; }
+      else { console.log(c.gray(`    $ ${s.cmd![0]} ${maskArgs(s.cmd![1])}`)); ok = (await run(s.cmd![0], s.cmd![1], { cwd: opts.ctx.root })) === 0; }
     }
-    if (!ok) {
-      console.log(c.yellow(`  That step failed. You can run it manually and continue.`));
-      if (!(await promptYesNo("Continue anyway?", false))) return null;
+    // Auto-retries (above) exhausted and still failing: surface it + let the user
+    // retry as many times as they like, skip it, or abort. The error is already
+    // on screen (inherited stdio).
+    while (!ok) {
+      console.log(c.red(`  ✗ step failed: ${s.desc} — the error is shown above.`));
+      const choice = await select("How do you want to handle it?", [
+        { label: "Retry this step" },
+        { label: "Skip it and continue", hint: "you'll fix it manually" },
+        { label: "Abort the deploy" },
+      ]);
+      if (choice === 0) {
+        if (s.run) ok = await s.run();
+        else { console.log(c.gray(`    $ ${s.cmd![0]} ${maskArgs(s.cmd![1])}`)); ok = (await run(s.cmd![0], s.cmd![1], { cwd: opts.ctx.root })) === 0; }
+      } else if (choice === 1) { console.log(c.gray(`  ↷ skipped: ${s.desc}`)); break; }
+      else { return null; }
     }
   }
   // Auto-detect the deployed URL (the deploy just printed it); only fall back to
   // asking the user to paste if detection failed.
-  let url: string | null = opts.getUrl ? await opts.getUrl() : null;
-  if (url) {
+  const detected = opts.getUrl ? await opts.getUrl() : null;
+  let url: string;
+  if (detected) {
+    url = detected.replace(/\/+$/, "");
     console.log(c.green(`  ✓ detected URL: ${url}`));
   } else {
-    url = (await prompt("Paste your deployment's public URL (e.g. https://your-app.up.railway.app)")).trim();
-    if (url && !/^https?:\/\//i.test(url)) url = "https://" + url; // accept a bare domain
-    if (!/^https?:\/\/[^/.]+\.[^/]+/.test(url)) { console.log(c.red("  Need a valid URL (e.g. https://your-app.up.railway.app).")); return null; }
+    url = await promptUrl("Paste your deployment's public URL (e.g. https://your-app.up.railway.app)");
   }
-  url = url.replace(/\/$/, "");
   // OAuth's issuer must equal the real URL, which we only know now — so set
   // PUBLIC_URL and redeploy automatically (run() inherits stdio → the user sees
   // progress) rather than asking them to run a command in a second terminal.
+  if (!(await confirmStep("Set PUBLIC_URL and redeploy so OAuth works?", { detail: `points the server's OAuth issuer at ${url} (required for web/mobile connectors)`, defaultYes: true }))) {
+    console.log(c.yellow(`  Skipped. OAuth won't work until you set PUBLIC_URL=${url} and redeploy yourself.`));
+    return url;
+  }
   console.log(c.gray("  Setting PUBLIC_URL + redeploying so OAuth works…"));
   for (const [cmd, args] of opts.setPublicUrlCmds(url)) {
     console.log(c.gray(`    $ ${cmd} ${args.join(" ")}`));
     let ok = false;
     for (let i = 0; i < 4 && !ok; i++) {
-      if (i > 0) { console.log(c.yellow(`    API hiccup — retry ${i}/3…`)); await new Promise((r) => setTimeout(r, 2500)); }
+      if (i > 0) { console.log(c.yellow(`    API hiccup — retry ${i}/3`)); await pause(2500, "backing off before retry"); }
       ok = (await run(cmd, args, { cwd: opts.ctx.root })) === 0;
     }
-    if (!ok) {
-      console.log(c.yellow("  That command failed — run it yourself, then continue."));
-      if (!(await promptYesNo("Continue anyway?", false))) return null;
+    while (!ok) {
+      console.log(c.red("  ✗ that command failed — the error is shown above."));
+      const choice = await select("How do you want to handle it?", [
+        { label: "Retry it" },
+        { label: "Skip and continue", hint: "OAuth won't work until you set PUBLIC_URL yourself" },
+        { label: "Abort" },
+      ]);
+      if (choice === 0) ok = (await run(cmd, args, { cwd: opts.ctx.root })) === 0;
+      else if (choice === 1) break;
+      else return null;
     }
   }
   return url;
@@ -566,9 +835,9 @@ async function assistedDeploy(opts: {
 // timed-out `init` can still create the project server-side. So: try init, and if
 // it fails, check whether the project got created and LINK to it instead of
 // re-running init (which would pile up duplicate projects). Retries the flaky API.
-function railwayHasProject(appName: string): boolean {
+async function railwayHasProject(appName: string): Promise<boolean> {
   for (let i = 0; i < 3; i++) {
-    const r = capture("railway", ["list"]);
+    const r = await withSpinner("checking Railway for the project", () => captureAsync("railway", ["list"]));
     if (r.code === 0) return r.stdout.includes(appName);
   }
   return false;
@@ -576,11 +845,11 @@ function railwayHasProject(appName: string): boolean {
 
 async function railwayInitOrLink(appName: string, root: string): Promise<boolean> {
   for (let attempt = 1; attempt <= 4; attempt++) {
-    if (attempt > 1) { console.log(c.yellow(`    Railway API hiccup — retry ${attempt - 1}/3…`)); await new Promise((r) => setTimeout(r, 2500)); }
+    if (attempt > 1) { console.log(c.yellow(`    Railway API hiccup — retry ${attempt - 1}/3`)); await pause(2500, "backing off (Railway's API is flaky)"); }
     console.log(c.gray(`    $ railway init --name ${appName}`));
     if ((await run("railway", ["init", "--name", appName], { cwd: root })) === 0) return true;
     // init's response may have timed out AFTER creating the project — link to it.
-    if (railwayHasProject(appName)) {
+    if (await railwayHasProject(appName)) {
       console.log(c.gray("  (init's response timed out, but the project exists — linking to it)"));
       console.log(c.gray(`    $ railway link --project ${appName}`));
       if ((await run("railway", ["link", "--project", appName], { cwd: root })) === 0) return true;
@@ -609,17 +878,25 @@ async function deployRailway(ctx: DeployCtx): Promise<string | null> {
       // runs first (deploys env-less + crashes once, then variables redeploys it
       // healthy). init is special — a timeout may have still created it, so we
       // link rather than re-init; the rest retry the flaky API.
-      { desc: "create the project", run: () => railwayInitOrLink(ctx.appName, ctx.root) },
-      { desc: "deploy (creates the service + builds the Dockerfile)", cmd: ["railway", ["up", "--detach"]], retries: 3 },
+      {
+        desc: "create the project",
+        run: () => railwayInitOrLink(ctx.appName, ctx.root),
+        confirm: { summary: `Create a new Railway project '${ctx.appName}'?`, detail: "a new project on your Railway account", defaultYes: true },
+      },
+      {
+        desc: "deploy (creates the service + builds the Dockerfile)",
+        cmd: ["railway", ["up", "--detach"]],
+        retries: 3,
+        confirm: { summary: "Deploy to Railway now?", detail: "creates a service + starts a build on your Railway account", defaultYes: true },
+      },
       { desc: "set environment variables (redeploys with them)", cmd: ["railway", varArgs], retries: 3 },
     ],
     getUrl: async () => {
       // `railway domain` prints "🚀 https://…up.railway.app" — capture + parse it
       // instead of asking the user to paste what we just printed.
       for (let i = 0; i < 4; i++) {
-        if (i > 0) { console.log(c.yellow(`    API hiccup — retry ${i}/3…`)); await new Promise((r) => setTimeout(r, 2500)); }
-        console.log(c.gray("  → get the public domain\n    $ railway domain"));
-        const r = capture("railway", ["domain"], { cwd: ctx.root });
+        if (i > 0) { console.log(c.yellow(`    API hiccup — retry ${i}/3`)); await pause(2500, "backing off before retry"); }
+        const r = await withSpinner("fetching the public domain (railway domain)", () => captureAsync("railway", ["domain"], { cwd: ctx.root }));
         const m = `${r.stdout}\n${r.stderr}`.match(/https?:\/\/[a-z0-9.-]+\.up\.railway\.app/i);
         if (m) return m[0];
       }
@@ -662,6 +939,7 @@ async function deployCloudRun(ctx: DeployCtx): Promise<string | null> {
         {
           desc: "enable required APIs (run, cloudbuild, artifactregistry)",
           cmd: ["gcloud", ["services", "enable", "run.googleapis.com", "cloudbuild.googleapis.com", "artifactregistry.googleapis.com"]],
+          confirm: { summary: "Enable the Cloud Run / Cloud Build / Artifact Registry APIs?", detail: "turns these APIs on for the selected project (one-time, idempotent)", cmd: "gcloud services enable run / cloudbuild / artifactregistry", defaultYes: true, skippable: true },
         },
         {
           // gcloud run deploy --source builds via the project's COMPUTE default
@@ -669,6 +947,7 @@ async function deployCloudRun(ctx: DeployCtx): Promise<string | null> {
           // (PERMISSION_DENIED resolving the source). Grant the builder role.
           desc: "grant Cloud Build access to the default service account",
           cmd: ["sh", ["-c", 'P="$(gcloud config get-value project 2>/dev/null)"; N="$(gcloud projects describe "$P" --format=\'value(projectNumber)\' 2>/dev/null)"; gcloud projects add-iam-policy-binding "$P" --member="serviceAccount:${N}-compute@developer.gserviceaccount.com" --role=roles/cloudbuild.builds.builder --condition=None']],
+          confirm: { summary: "Grant the Cloud Build builder role to the compute service account?", detail: "modifies project IAM — needed for `--source` builds. Skip if you've already granted it.", cmd: "gcloud projects add-iam-policy-binding … --role=roles/cloudbuild.builds.builder", defaultYes: true, skippable: true },
         },
         {
           desc: "deploy from source (Cloud Build builds the Dockerfile)",
@@ -678,14 +957,16 @@ async function deployCloudRun(ctx: DeployCtx): Promise<string | null> {
             "--region", "us-west1",
             "--allow-unauthenticated",
             "--port", "3000",
+            "--min-instances", "1",
             "--env-vars-file", envFile,
             "--quiet",
           ]],
+          confirm: { summary: `Build + deploy '${ctx.appName}' to Cloud Run (us-west1)?`, detail: "uploads source, runs Cloud Build, and creates a public service (may incur charges)", cmd: `gcloud run deploy ${ctx.appName} --source . --region us-west1`, defaultYes: true },
         },
       ],
       getUrl: async () => {
         // gcloud knows the service URL — fetch it instead of asking the user.
-        const r = capture("gcloud", ["run", "services", "describe", ctx.appName, "--region", "us-west1", "--format=value(status.url)"]);
+        const r = await withSpinner("fetching the Cloud Run service URL", () => captureAsync("gcloud", ["run", "services", "describe", ctx.appName, "--region", "us-west1", "--format=value(status.url)"]));
         const url = r.stdout.trim();
         return /^https?:\/\//.test(url) ? url : null;
       },
@@ -699,23 +980,32 @@ async function deployCloudRun(ctx: DeployCtx): Promise<string | null> {
   }
 }
 
-// CUSTOM — printed guide for any other platform or your own server.
+// CUSTOM — run the container yourself on any Docker host. Writes a complete,
+// ready-to-run env file (so the real secret values are usable, not truncated on
+// screen) + prints the exact docker commands.
 async function deployCustom(ctx: DeployCtx): Promise<string | null> {
+  // All settings — including the full tokens + generated password — go into an
+  // env file (chmod 600) instead of being printed (truncated + leaked) on screen.
+  const envFile = resolve(ctx.root, ".env.deploy");
+  const body =
+    Object.entries(ctx.env).map(([k, v]) => `${k}=${v}`).join("\n") +
+    "\nPUBLIC_URL=https://CHANGE-ME-to-your-public-https-address\n";
+  writeFileSync(envFile, body, { mode: 0o600 });
+
   console.log("");
-  console.log(c.bold("  Custom / self-hosted deploy"));
-  console.log(c.gray("  1. Build the image (the repo ships a Dockerfile):"));
-  console.log(`     docker build -t whoop-mcp .`);
-  console.log(c.gray("  2. Run it with these env vars (HTTPS + a public hostname required):"));
-  for (const [k, v] of Object.entries(ctx.env)) {
-    const shown = ["MCP_AUTH_TOKEN", "AUTH_PASSWORD", "WHOOP_IOS_BEARER_TOKEN", "WHOOP_COGNITO_REFRESH_TOKEN"].includes(k)
-      ? v.slice(0, 8) + "…"
-      : v;
-    console.log(`       ${c.brand(k)}=${shown}`);
-  }
-  console.log(c.gray("  3. Set PUBLIC_URL to your server's public origin (e.g. https://whoop.example.com)."));
-  console.log(c.gray("  4. Make sure port 3000 is reachable over HTTPS."));
+  console.log(`  ${c.bold(c.white("Self-host it on any Docker host"))} ${c.gray("— a VPS, Render, your own box, whatever.")}`);
   console.log("");
-  const url = await prompt("Once it's live, paste the public URL");
-  if (!url.startsWith("http")) { console.log(c.red("  Need a valid https URL.")); return null; }
-  return url.replace(/\/$/, "");
+  console.log(`  ${c.violet("1")}  ${c.white("Build the image")} ${c.gray("— the repo already has a Dockerfile:")}`);
+  console.log(`        ${c.cyan("docker build -t whoop-mcp .")}`);
+  console.log("");
+  console.log(`  ${c.violet("2")}  ${c.white("Your full config")} ${c.gray("(tokens + the generated password) was written to:")}`);
+  console.log(`        ${c.brand(envFile)}  ${c.gray("(chmod 600 — keep it private)")}`);
+  console.log(`        ${c.gray("Open it and set")} ${c.bold(c.white("PUBLIC_URL"))} ${c.gray("to the")} ${c.white("https:// address your server will live at")}`);
+  console.log(`        ${c.gray("— you need a public domain/hostname with HTTPS. That same URL is what you paste below.")}`);
+  console.log("");
+  console.log(`  ${c.violet("3")}  ${c.white("Run it")} ${c.gray("(serves on port 3000):")}`);
+  console.log(`        ${c.cyan(`docker run -d --restart unless-stopped -p 3000:3000 --env-file ${envFile} whoop-mcp`)}`);
+  console.log(`        ${c.gray("then put it behind HTTPS at that domain (a reverse proxy, Cloudflare Tunnel, your host's TLS, …).")}`);
+  console.log("");
+  return promptUrl("Once it's reachable, paste that public URL (the PUBLIC_URL you set)");
 }
