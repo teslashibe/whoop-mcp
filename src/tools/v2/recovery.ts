@@ -10,7 +10,7 @@ import { todayIso } from "../../lib/dates.js";
 export function registerRecovery(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_recovery",
-    "Recovery deep-dive: score, HRV (current + baseline), RHR (current + baseline), respiratory rate, SpO2, skin temp, sleep performance contributor, calibration state, recovery contributors.",
+    "Recovery deep-dive: score, state, HRV (current + baseline), RHR (current + baseline), respiratory rate, SpO2, skin temp, sleep performance. (the per-metric data is in the typed hrv/rhr/etc. fields; the generic contributors[] array and calibration_state are empty/null in the current tile shape.)",
     { date: z.iso.date().optional().describe("YYYY-MM-DD. Defaults to today.") },
     async ({ date }) => {
       const d = date ?? todayIso();

@@ -3,7 +3,7 @@ import type { z } from "zod";
 export class WhoopAuthExpiredError extends Error {
   constructor() {
     super(
-      "Whoop bearer token expired. Run `whoop-mcp refresh` to capture a fresh one.",
+      "Whoop bearer token expired. Run `whoop-mcp auth` to capture a fresh one.",
     );
     this.name = "WhoopAuthExpiredError";
   }
@@ -27,15 +27,6 @@ export class WhoopServerError extends Error {
       `Whoop API returned ${status} on ${path}. This is usually transient — try again in 30s.`,
     );
     this.name = "WhoopServerError";
-  }
-}
-
-export class WhoopSchemaError extends Error {
-  constructor(public readonly path: string, public readonly missingField: string) {
-    super(
-      `Whoop response schema changed. Field '${missingField}' missing on ${path}. Tool returned partial data.`,
-    );
-    this.name = "WhoopSchemaError";
   }
 }
 

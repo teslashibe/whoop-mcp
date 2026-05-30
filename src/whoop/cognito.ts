@@ -50,7 +50,7 @@ export function decodeJwtExp(jwt: string): number {
 }
 
 async function callCognito(
-  target: "InitiateAuth" | "RespondToAuthChallenge" | "RevokeToken",
+  target: "InitiateAuth" | "RespondToAuthChallenge",
   body: object,
 ): Promise<CognitoResponse> {
   const response = await fetch(ENDPOINT, {

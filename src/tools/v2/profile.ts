@@ -20,8 +20,8 @@ export function registerProfile(server: McpServer, client: WhoopClient): void {
         client.get("/users-service/v1/hidden-metrics/HEALTHSPAN").catch(() => null),
         client.get("/users-service/v1/stealth-mode").catch(() => null),
       ]);
-      const projected = projectProfile({ bootstrap, hidden_body_comp, hidden_healthspan, stealth });
       try {
+        const projected = projectProfile({ bootstrap, hidden_body_comp, hidden_healthspan, stealth });
         const out = ProfileOut.parse(projected);
         return { content: [{ type: "text", text: jsonOut(out) }] };
       } catch (e) {

@@ -36,6 +36,8 @@ export function registerLiftCustomExercise(server: McpServer, client: WhoopClien
         ])
         .default("OTHER")
         .describe("Whoop's API rejects OLYMPIC_LIFT, ROTATION, GAIT, CARRY despite them being plausible — use OTHER for those."),
+      // Write-side enum differs from the read catalog (whoop_lift_catalog returns
+      // LEFT/RIGHT): the create-exercise POST requires the UNILATERAL_* form.
       laterality: z
         .enum(["BILATERAL", "UNILATERAL_LEFT", "UNILATERAL_RIGHT", "ALTERNATING"])
         .default("BILATERAL"),

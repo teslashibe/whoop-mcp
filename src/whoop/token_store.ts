@@ -8,7 +8,7 @@
 //     host that lets you persist a small file (Fly volumes, Railway disks,
 //     a VPS). The default.
 //   - MemoryTokenStore: no persistence. Used on hosts with read-only file
-//     systems (Cloudflare Workers, Vercel Functions). Accept that you'll
+//     systems (Cloudflare Workers, read-only container disks). Accept that you'll
 //     re-bootstrap every 30 days. Opt in via WHOOP_TOKEN_STORE=memory.
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";

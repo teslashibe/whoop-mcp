@@ -22,8 +22,8 @@ export function registerLiftExercise(server: McpServer, client: WhoopClient): vo
         client.get(`/weightlifting-service/v3/exercise/${exercise_id}/exercise_history`),
         client.get(`/weightlifting-service/v3/exercise/${exercise_id}/personal_records`),
       ]);
-      const projected = projectLiftExercise({ info, history, prs });
       try {
+        const projected = projectLiftExercise({ info, history, prs });
         const out = LiftExerciseOut.parse(projected);
         return { content: [{ type: "text", text: jsonOut(out) }] };
       } catch (e) {
