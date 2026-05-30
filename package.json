@@ -40,19 +40,19 @@
     ".dockerignore"
   ],
   "scripts": {},
-  "_scripts_note": "All workflows are `whoop-mcp <command>` (build, dev, dev:http, start, test, typecheck, auth, refresh, cloud, local, deploy, logs, ping, …). The only npm steps are `npm install` and, for the one-time build before the CLI is linked, `npx tsc`. See README → Get Started.",
+  "_scripts_note": "All workflows are `whoop-mcp <command>` (build, dev, dev:http, start, test, typecheck, auth, cloud, local, deploy, logs, ping, …). The only npm steps are `npm install` and, for the one-time build before the CLI is linked, `npx tsc`. See README → Get Started.",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "dotenv": "^17.4.0",
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "zod": "^4.4.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
-    "@types/node": "^24.0.0",
-    "tsx": "^4.22.0",
-    "typescript": "^6.0.0",
-    "vitest": "^4.1.0"
+    "@types/node": "^24.12.4",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
   },
   "engines": {
     "node": ">=24"
