@@ -505,7 +505,7 @@ async function assistedDeploy(opts: {
   install: { brewPkg?: string; npmPkg?: string; scriptUrl?: string; manualHint: string };
   loginCheck: () => boolean;
   loginCmd: () => Promise<number>;
-  steps: Array<{ desc: string; cmd: [string, string[]] }>;
+  steps: Array<{ desc: string; cmd?: [string, string[]]; run?: () => Promise<boolean>; retries?: number }>;
   setPublicUrlCmds: (url: string) => Array<[string, string[]]>;
   ctx: DeployCtx;
 }): Promise<string | null> {
@@ -519,8 +519,14 @@ async function assistedDeploy(opts: {
   setSummary(opts.ctx.env);
   for (const s of opts.steps) {
     console.log(c.gray(`  → ${s.desc}`));
-    console.log(c.gray(`    $ ${s.cmd[0]} ${s.cmd[1].join(" ")}`));
-    if (await run(s.cmd[0], s.cmd[1], { cwd: opts.ctx.root }) !== 0) {
+    const tries = (s.retries ?? 0) + 1;
+    let ok = false;
+    for (let i = 0; i < tries && !ok; i++) {
+      if (i > 0) { console.log(c.yellow(`    API hiccup — retry ${i}/${s.retries}…`)); await new Promise((r) => setTimeout(r, 2500)); }
+      if (s.run) ok = await s.run();
+      else { console.log(c.gray(`    $ ${s.cmd![0]} ${s.cmd![1].join(" ")}`)); ok = (await run(s.cmd![0], s.cmd![1], { cwd: opts.ctx.root })) === 0; }
+    }
+    if (!ok) {
       console.log(c.yellow(`  That step failed. You can run it manually and continue.`));
       if (!(await promptYesNo("Continue anyway?", false))) return null;
     }
@@ -535,7 +541,12 @@ async function assistedDeploy(opts: {
   console.log(c.gray("  Setting PUBLIC_URL + redeploying so OAuth works…"));
   for (const [cmd, args] of opts.setPublicUrlCmds(url)) {
     console.log(c.gray(`    $ ${cmd} ${args.join(" ")}`));
-    if (await run(cmd, args, { cwd: opts.ctx.root }) !== 0) {
+    let ok = false;
+    for (let i = 0; i < 4 && !ok; i++) {
+      if (i > 0) { console.log(c.yellow(`    API hiccup — retry ${i}/3…`)); await new Promise((r) => setTimeout(r, 2500)); }
+      ok = (await run(cmd, args, { cwd: opts.ctx.root })) === 0;
+    }
+    if (!ok) {
       console.log(c.yellow("  That command failed — run it yourself, then continue."));
       if (!(await promptYesNo("Continue anyway?", false))) return null;
     }
@@ -543,7 +554,35 @@ async function assistedDeploy(opts: {
   return url;
 }
 
-// RAILWAY — CLI-automatable; best-effort (untested).
+// Railway's GraphQL API (backboard.railway.com) intermittently times out, and a
+// timed-out `init` can still create the project server-side. So: try init, and if
+// it fails, check whether the project got created and LINK to it instead of
+// re-running init (which would pile up duplicate projects). Retries the flaky API.
+function railwayHasProject(appName: string): boolean {
+  for (let i = 0; i < 3; i++) {
+    const r = capture("railway", ["list"]);
+    if (r.code === 0) return r.stdout.includes(appName);
+  }
+  return false;
+}
+
+async function railwayInitOrLink(appName: string, root: string): Promise<boolean> {
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    if (attempt > 1) { console.log(c.yellow(`    Railway API hiccup — retry ${attempt - 1}/3…`)); await new Promise((r) => setTimeout(r, 2500)); }
+    console.log(c.gray(`    $ railway init --name ${appName}`));
+    if ((await run("railway", ["init", "--name", appName], { cwd: root })) === 0) return true;
+    // init's response may have timed out AFTER creating the project — link to it.
+    if (railwayHasProject(appName)) {
+      console.log(c.gray("  (init's response timed out, but the project exists — linking to it)"));
+      console.log(c.gray(`    $ railway link --project ${appName}`));
+      if ((await run("railway", ["link", "--project", appName], { cwd: root })) === 0) return true;
+    }
+  }
+  console.log(c.red("  Railway's API (backboard.railway.com) kept timing out. Give it a minute and re-run."));
+  return false;
+}
+
+// RAILWAY — CLI-automatable; resilient to Railway's flaky GraphQL API.
 async function deployRailway(ctx: DeployCtx): Promise<string | null> {
   // Railway rejects `--set KEY=` (empty value), and PUBLIC_URL isn't known until
   // `domain` runs — so set the non-empty vars now, PUBLIC_URL in the 2nd pass.
@@ -558,14 +597,14 @@ async function deployRailway(ctx: DeployCtx): Promise<string | null> {
     loginCheck: () => capture("railway", ["whoami"]).code === 0,
     loginCmd: () => run("railway", ["login"]),
     steps: [
-      // `railway init` creates a PROJECT, not a service; `railway variables` needs
-      // a service. `railway up` is what creates the service, so it must run first
-      // (it deploys env-less + crashes once, then the variables step redeploys it
-      // healthy — Railway auto-redeploys when variables change).
-      { desc: "create the project", cmd: ["railway", ["init", "--name", ctx.appName]] },
-      { desc: "deploy (creates the service + builds the Dockerfile)", cmd: ["railway", ["up", "--detach"]] },
-      { desc: "set environment variables (redeploys with them)", cmd: ["railway", varArgs] },
-      { desc: "generate a public domain", cmd: ["railway", ["domain"]] },
+      // init creates a PROJECT (not a service); `up` creates the service, so it
+      // runs first (deploys env-less + crashes once, then variables redeploys it
+      // healthy). init is special — a timeout may have still created it, so we
+      // link rather than re-init; the rest retry the flaky API.
+      { desc: "create the project", run: () => railwayInitOrLink(ctx.appName, ctx.root) },
+      { desc: "deploy (creates the service + builds the Dockerfile)", cmd: ["railway", ["up", "--detach"]], retries: 3 },
+      { desc: "set environment variables (redeploys with them)", cmd: ["railway", varArgs], retries: 3 },
+      { desc: "generate a public domain", cmd: ["railway", ["domain"]], retries: 3 },
     ],
     setPublicUrlCmds: (url) => [
       ["railway", ["variables", "--set", `PUBLIC_URL=${url}`]],
