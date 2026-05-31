@@ -11,7 +11,7 @@ import { gateError } from "../../whoop/session_state.js";
 export function registerJournalLog(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_journal_log",
-    "WRITE: save full journal entry for a date. Replaces existing entry. Requires calling whoop_journal_catalog first to see valid behavior_tracker_id values. Preview unless confirm:true.",
+    "WRITE: save the full journal entry for a date — this REPLACES the whole day's entry, so first call whoop_journal to read what's already logged today and resend those entries together with your additions, or they'll be wiped. Use whoop_journal_catalog for each behavior_tracker_id and its magnitude type: bare → pass just the id, boolean → add answered_yes, magnitude → add magnitude_value.",
     {
       date: z.iso.date().optional(),
       behaviors: z.array(z.object({

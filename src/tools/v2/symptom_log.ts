@@ -9,7 +9,7 @@ import { gateError } from "../../whoop/session_state.js";
 export function registerSymptomLog(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_symptom_log",
-    "WRITE: log women's-health symptoms (cervical mucus, menstruation flow, tracker symptoms) for a date. If passing symptoms[].behavior_tracker_id, requires calling whoop_journal_catalog first.",
+    "WRITE: log women's-health symptoms for a date via menstruation (none, spotting, light_flow, medium_flow, heavy_flow), cervical_mucus (5 discharge types — see the param enum; omit to clear), and/or symptoms[] referencing behavior_tracker_ids. Women's-health tracking must be set up, and any symptoms[] require calling whoop_journal_catalog first.",
     {
       date: z.iso.date(),
       menstruation: z.enum(["none", "spotting", "light_flow", "medium_flow", "heavy_flow"]).optional(),
@@ -32,13 +32,16 @@ export function registerSymptomLog(server: McpServer, client: WhoopClient): void
       confirm: z.boolean().default(false),
     },
     async ({ date, menstruation, cervical_mucus, symptoms, confirm }) => {
-      if (symptoms.length > 0) {
+      // zod fills the default [] on the MCP path, but guard anyway so a
+      // menstruation/cervical_mucus-only call can never trip on undefined.
+      const syms = symptoms ?? [];
+      if (syms.length > 0) {
         const gate = gateError("behaviors", "whoop_journal_catalog");
         if (gate) return { content: [{ type: "text", text: JSON.stringify(gate, null, 2) }], isError: true };
       }
       const path = "/womens-health-service/v1/symptom-insights/log/symptoms";
       const body: Record<string, unknown> = {
-        tracker_inputs: symptoms.map((s) => ({
+        tracker_inputs: syms.map((s) => ({
           is_suggested: false,
           behavior_tracker_id: s.behavior_tracker_id,
           ...(s.answered_yes !== undefined ? { answered_yes: s.answered_yes } : {}),
@@ -56,7 +59,7 @@ export function registerSymptomLog(server: McpServer, client: WhoopClient): void
                   date,
                   menstruation,
                   cervical_mucus,
-                  symptoms_count: symptoms.length,
+                  symptoms_count: syms.length,
                 }),
               ),
             },
@@ -67,7 +70,7 @@ export function registerSymptomLog(server: McpServer, client: WhoopClient): void
       const out = SymptomLogOut.parse({
         logged: true as const,
         date,
-        symptoms_count: symptoms.length,
+        symptoms_count: syms.length,
       });
       return { content: [{ type: "text", text: jsonOut(out) }] };
     },

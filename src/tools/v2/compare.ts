@@ -18,7 +18,7 @@ function dateBefore(end: string, days: number): string {
 export function registerCompare(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_compare",
-    "Compare two date windows side by side across recovery/sleep/strain. Useful for 'how does this week compare to last week'.",
+    "Compare two date windows side by side (e.g. 'this week vs last week') — each metric's average in window A vs window B plus the delta. window: week or month. metrics: any of RECOVERY, SLEEP_PERFORMANCE, DAY_STRAIN, HRV, RHR (defaults to all five).",
     {
       window: z.enum(["week", "month"]).default("week"),
       end_a: z.iso.date().optional(),

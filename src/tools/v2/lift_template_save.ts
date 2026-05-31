@@ -13,16 +13,18 @@ const PATH = "/weightlifting-service/v3/workout-template";
 export function registerLiftTemplateSave(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_lift_template_save",
-    "WRITE: create or save-as a Strength Trainer workout template. Requires calling whoop_lift_catalog first. Preview unless confirm:true.",
+    "WRITE: create or save-as a Strength Trainer workout template from exercises whose sets can specify reps and/or weight (kg) and/or time_seconds. Call whoop_lift_catalog first for valid exercise_ids; preview unless confirm:true.",
     {
       name: z.string(),
       base_template_key: z.number().int().optional().describe("If provided, saves as derivative of an existing template."),
       exercises: z.array(z.object({
         exercise_id: z.string(),
         sets: z.array(z.object({
-          reps: z.number().int().nullable(),
-          weight: z.number().nullable(),
-          time_seconds: z.number().int().nullable(),
+          // All optional — a template set can prescribe just reps, just weight,
+          // a time, or nothing. Omit the keys you don't need.
+          reps: z.number().int().nullable().optional(),
+          weight: z.number().nullable().optional(),
+          time_seconds: z.number().int().nullable().optional(),
         })).min(1),
       })).min(1),
       confirm: z.boolean().default(false),

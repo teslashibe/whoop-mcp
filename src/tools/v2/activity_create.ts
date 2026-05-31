@@ -13,7 +13,7 @@ const PATH = "/core-details-bff/v0/create-activity";
 export function registerActivityCreate(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_activity_create",
-    "WRITE: create a generic activity (logging a workout you did off-strap). Requires calling whoop_sports_catalog first. Preview unless confirm:true.",
+    "WRITE: log a generic off-strap activity for a sport_id (call whoop_sports_catalog first to get one) over a start–end window of at least 1 minute. Preview unless confirm:true.",
     {
       sport_id: z.number().int().describe("Numeric sport_id from whoop_sports_catalog. Must call that tool first; this tool rejects calls otherwise."),
       start: z.iso.datetime({ offset: true }),

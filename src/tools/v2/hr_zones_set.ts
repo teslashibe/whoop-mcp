@@ -8,7 +8,7 @@ import { jsonOut } from "../../whoop/json_out.js";
 export function registerHrZonesSet(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_hr_zones_set",
-    "WRITE: set max HR (auto-computes zones) OR set custom zones.",
+    "WRITE: set your heart-rate zones. mode=max_hr → pass max_hr (bpm) and Whoop recomputes the 5 zones; mode=custom → pass all 5 zones (ZONE_1..ZONE_5, each with min/max bpm).",
     {
       mode: z.enum(["max_hr", "custom"]),
       max_hr: z.number().int().optional().describe("Required for mode=max_hr."),

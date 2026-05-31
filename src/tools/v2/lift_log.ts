@@ -13,7 +13,7 @@ const PATH = "/weightlifting-service/v2/weightlifting-workout/activity";
 export function registerLiftLog(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_lift_log",
-    "WRITE: log a finished strength workout. Requires calling whoop_lift_catalog first to see valid exercise IDs. Pass exercises with sets (reps/weight/time). Preview unless confirm:true.",
+    "WRITE: log a finished strength workout — pass exercises, each with sets (reps and/or weight in kg and/or time_seconds). Call whoop_lift_catalog first to get valid exercise_ids; preview unless confirm:true.",
     {
       name: z.string().optional(),
       start: z.iso.datetime({ offset: true }).optional(),

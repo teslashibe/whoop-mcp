@@ -10,7 +10,7 @@ import { todayIso } from "../../lib/dates.js";
 export function registerTrend(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_trend",
-    "Trend data for one of 25 metrics over week/month/6-month windows. Returns per-day data points + aggregate stats + delta vs prior window.",
+    "Trend for one metric across week / month / 6-month windows — per-day points, aggregate stats, and delta vs the prior window. metric is exactly one of: HRV, RHR, RECOVERY, DAY_STRAIN, CALORIES, STEPS, AVERAGE_HR, HOURS_V_NEED, HOURS_V_NEEDED_PERCENT, TIME_IN_BED, SLEEP_PERFORMANCE, SLEEP_EFFICIENCY, SLEEP_CONSISTENCY, SLEEP_DEBT_POST, RESTORATIVE_SLEEP, HR_ZONES_1_3, HR_ZONES_4_5, RESPIRATORY_RATE, STRENGTH_ACTIVITY_TIME, STRESS, STRESS_DURING_SLEEP, STRESS_DURING_NON_STRAIN, VO2_MAX, BODY_COMPOSITION, WEIGHT.",
     {
       metric: z.enum(METRICS).describe("Which metric to trend."),
       end_date: z.iso.date().optional().describe("End date. Defaults to today."),

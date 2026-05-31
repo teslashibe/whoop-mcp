@@ -9,9 +9,9 @@ import { jsonOut } from "../../whoop/json_out.js";
 export function registerWorkout(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_workout",
-    "Single workout full detail: strain, HR curve, HR zone durations, calories, distance, sport. Strength workouts also include MSK summary.",
+    "Single workout full detail: strain, HR curve, HR zone durations, calories, distance, sport. Strength workouts also include MSK summary. Note: a just-created/logged activity stays 'pending' for a while and errors here until Whoop scores it.",
     {
-      activity_id: z.string().describe("Workout UUID."),
+      activity_id: z.string().describe("Workout UUID (from whoop_workouts; must be a scored, non-pending activity)."),
     },
     async ({ activity_id }) => {
       const raw = await client.get("/core-details-bff/v1/cardio-details", { activityId: activity_id });

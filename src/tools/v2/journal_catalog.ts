@@ -20,7 +20,7 @@ const CATEGORIES = [
 export function registerJournalCatalog(server: McpServer, _client: unknown): void {
   server.tool(
     "whoop_journal_catalog",
-    "Browse the 308-behavior catalog. Filter by category or substring. Used to find behavior IDs for whoop_journal_log.",
+    "Search the 308-behavior journal catalog to get a behavior_tracker_id and its magnitude type for whoop_journal_log. Filter by substring, magnitude_type (bare, boolean, or magnitude), or category (Drugs & Medication, Health & Symptoms, Hormonal Health, Lifestyle, Mental Wellbeing, Nutrition, Recovery, Sleep & Circadian Health, Supplements).",
     {
       category: z.enum(CATEGORIES).optional(),
       search: z.string().optional(),

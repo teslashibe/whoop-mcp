@@ -10,7 +10,7 @@ import { rangeFromDays } from "../../lib/dates.js";
 export function registerWorkouts(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_workouts",
-    "Recent workouts: list with sport, start/end, duration, strain, avg/max HR, calories. Use whoop_workout(activity_id) for full detail.",
+    "Recent workouts — sport, start/end, duration, strain, avg/max HR, and calories. Optional sport-name filter, limit (≤25), and start/end date range; use whoop_workout(activity_id) for one workout's full detail (HR curve, zones).",
     {
       start: z.iso.datetime({ offset: true }).optional().describe("ISO timestamp lower bound. Default: 30 days ago."),
       end: z.iso.datetime({ offset: true }).optional().describe("ISO timestamp upper bound. Default: now."),

@@ -20,7 +20,7 @@ function dateRange(period: "day" | "week" | "month"): { startDate: string; endDa
 export function registerCommunities(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_communities",
-    "Lists the communities you're a member of (teams, friend groups). For each community, returns its name, member count, and optionally your rank in it across a given metric/period. Complements whoop_leaderboard — use this to discover community IDs, then whoop_leaderboard to drill into one specific community's rankings.",
+    "Lists the communities you belong to (teams, friend groups) with member count and optionally your rank, controlled by team_type (ALL, COMMUNITY, TEAM, BUSINESS), metric (strain, sleep, recovery), and period (day, week, month). Use this to discover community IDs, then whoop_leaderboard to drill into one.",
     {
       team_type: z.enum(["ALL", "COMMUNITY", "TEAM", "BUSINESS"]).default("ALL").describe("Filter by community type. ALL returns everything."),
       metric: z.enum(["strain", "sleep", "recovery"]).default("strain").describe("Which leaderboard ranking to fetch your rank against."),

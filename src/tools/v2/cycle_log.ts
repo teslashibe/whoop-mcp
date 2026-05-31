@@ -10,7 +10,7 @@ const PATH = "/womens-health-service/v1/menstrual-cycle-insights/log";
 export function registerCycleLog(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_cycle_log",
-    "WRITE: log period or ovulation for a date.",
+    "WRITE: log a period or ovulation event for a date — pass period:true (optionally period_flow for flow intensity) OR ovulation:true, not both on the same date. Women's-health tracking must be set up on the account first (else the API 400s).",
     {
       date: z.iso.date(),
       period: z.boolean().optional(),

@@ -14,12 +14,15 @@ export function registerToday(server: McpServer, client: WhoopClient): void {
     {},
     async () => {
       const date = todayIso();
-      const [home, sleep, state] = await Promise.all([
+      const [home, sleep, recovery, state] = await Promise.all([
         client.get("/home-service/v1/home", { date }),
-        client.get("/home-service/v1/deep-dive/sleep/last-night", { date }).catch(() => null),
+        // Light sleep summary (~1 KB) — the full hypnogram lives in whoop_sleep.
+        client.get("/developer/v2/activity/sleep", { limit: "5" }).catch(() => null),
+        // HRV / RHR (the /home gauge only carries the recovery score).
+        client.get("/developer/v2/recovery", { limit: "5" }).catch(() => null),
         client.get("/activities-service/v1/user-state").catch(() => null),
       ]);
-      const projected = projectToday({ home, sleep, state, date });
+      const projected = projectToday({ home, sleep, recovery, state, date });
       try {
         const out = TodayOut.parse(projected);
         return { content: [{ type: "text", text: jsonOut(out) }] };

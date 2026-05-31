@@ -26,7 +26,7 @@ function localIsoNow(): string {
 export function registerPerformanceAssessment(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_performance_assessment",
-    "Whoop's performance assessment for a period: aggregated training load, recovery trends, sleep performance, progress against goals.",
+    "Whoop's performance assessment for a period — recoveries logged vs required, whether an assessment is due, and the next assessment window. period: WEEK or MONTH (default MONTH).",
     { period: z.enum(["WEEK", "MONTH"]).default("MONTH") },
     async ({ period }) => {
       const ts = localIsoNow();

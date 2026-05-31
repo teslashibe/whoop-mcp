@@ -14,11 +14,17 @@ export function registerDay(server: McpServer, client: WhoopClient): void {
       date: z.iso.date().describe("YYYY-MM-DD date to fetch. Required."),
     },
     async ({ date }) => {
-      const [home, sleep] = await Promise.all([
+      // Window the target date so we catch the sleep that *ends* on it.
+      const dayMs = Date.parse(`${date}T00:00:00.000Z`);
+      const start = new Date(dayMs - 86_400_000).toISOString();
+      const end = new Date(dayMs + 2 * 86_400_000).toISOString();
+      const [home, sleep, recovery] = await Promise.all([
         client.get("/home-service/v1/home", { date }),
-        client.get("/home-service/v1/deep-dive/sleep/last-night", { date }).catch(() => null),
+        // Light sleep summary (~1 KB) — the full hypnogram lives in whoop_sleep.
+        client.get("/developer/v2/activity/sleep", { start, end, limit: "10" }).catch(() => null),
+        client.get("/developer/v2/recovery", { start, end, limit: "10" }).catch(() => null),
       ]);
-      const projected = projectToday({ home, sleep, state: null, date });
+      const projected = projectToday({ home, sleep, recovery, state: null, date });
       try {
         const out = TodayOut.parse(projected);
         return { content: [{ type: "text", text: jsonOut(out) }] };

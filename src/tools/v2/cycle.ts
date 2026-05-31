@@ -10,7 +10,7 @@ import { todayIso } from "../../lib/dates.js";
 export function registerCycle(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_cycle",
-    "Current menstrual cycle status: phase, day, hormonal mode, MCI tile.",
+    "Current menstrual cycle status for a date: phase (e.g. Luteal Phase), cycle day, typical cycle length, and predicted next-period / ovulation dates. Requires women's-health tracking enabled on the account; fields return null if it isn't set up.",
     { date: z.iso.date().optional() },
     async ({ date }) => {
       const d = date ?? todayIso();

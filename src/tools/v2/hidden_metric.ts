@@ -8,7 +8,7 @@ import { jsonOut } from "../../whoop/json_out.js";
 export function registerHiddenMetric(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_hidden_metric",
-    "WRITE: show or hide a metric (BODY_COMP, HEALTHSPAN) on your dashboard.",
+    "WRITE: show or hide a dashboard metric. metric: BODY_COMP or HEALTHSPAN. action: hide or show.",
     {
       metric: z.enum(["BODY_COMP", "HEALTHSPAN"]),
       action: z.enum(["hide", "show"]),

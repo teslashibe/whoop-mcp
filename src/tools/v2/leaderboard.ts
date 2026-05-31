@@ -10,7 +10,7 @@ import { todayIso } from "../../lib/dates.js";
 export function registerLeaderboard(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_leaderboard",
-    "Community leaderboard ranking + your position. Auto-discovers your first community if community_id omitted.",
+    "Community leaderboard ranking + your own position in it. Auto-discovers your first community if community_id is omitted. metric: recovery, sleep, or strain. window: day, week, or month.",
     {
       community_id: z.number().int().optional(),
       date: z.iso.date().optional(),

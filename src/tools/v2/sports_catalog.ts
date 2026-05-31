@@ -7,7 +7,7 @@ import { markConsulted } from "../../whoop/session_state.js";
 export function registerSportsCatalog(server: McpServer, _client: unknown): void {
   server.tool(
     "whoop_sports_catalog",
-    "Browse the 203-sport catalog (numeric sport_id ↔ name). Used to find valid sport_ids for whoop_activity_create.",
+    "Search the 203-sport catalog (numeric sport_id ↔ name) to get the exact sport_id for whoop_activity_create. Filter by a substring of the sport name and read the id straight from the result rather than guessing one.",
     {
       search: z.string().optional().describe("Case-insensitive substring match on name."),
       limit: z.number().int().min(1).max(203).default(100),

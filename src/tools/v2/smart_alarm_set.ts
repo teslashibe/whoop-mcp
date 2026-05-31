@@ -27,7 +27,7 @@ const PreferencesShape = z.object({
 export function registerSmartAlarmSet(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_smart_alarm_set",
-    "WRITE: update one Smart Alarm schedule, the global preferences, or the master enable/disable switch.",
+    "WRITE: update Smart Alarm. To change WHEN the alarm wakes you, use mode=schedule (needs schedule_id + latest_wake_time) — that's the setting that actually controls the wake time. mode=preferences sets the global goal + enable flags, but its lower/upper_time_bound are ignored by the server whenever an explicit schedule exists, so don't use it to set a wake time. master_enable / master_disable turn the whole system on/off. For schedule/preferences, call whoop_smart_alarm first for the schedule_id + current values, then resend with your edits (these replace, not merge).",
     {
       mode: z.enum(["schedule", "preferences", "master_enable", "master_disable"]),
       schedule_id: z.string().optional(),

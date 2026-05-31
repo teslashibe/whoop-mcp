@@ -8,7 +8,7 @@ import { jsonOut } from "../../whoop/json_out.js";
 export function registerCoachAsk(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_coach_ask",
-    "WRITE (sends a message): ask Whoop Coach. Polls up to 30s. Preview unless confirm:true.",
+    "WRITE (creates a coach conversation): ask Whoop Coach a question and poll up to 30s for the reply. context tells the coach which screen you're asking about — one of HOME, RECOVERY, STRAIN, SLEEP, STRESS, CARDIO_DETAILS, WAKE_UP_REPORT (default HOME). Preview unless confirm:true.",
     {
       message: z.string(),
       context: z
@@ -64,22 +64,10 @@ export function registerCoachAsk(server: McpServer, client: WhoopClient): void {
       );
       const turnId = turn.id ?? turn.turn_id ?? "";
 
-      let polled = 0;
-      let lastResult: Record<string, unknown> = {};
-      let status = "PENDING";
-      for (; polled < 30; polled++) {
-        await new Promise((r) => setTimeout(r, 1000));
-        const r = await client.get<Record<string, unknown>>(
-          `/ai-conversation-bff/v1/conversation/${conversationId}/turn/${turnId}`,
-        );
-        lastResult = r;
-        status = typeof r.turn_status === "string" ? r.turn_status.toUpperCase() : status;
-        if (["COMPLETE", "COMPLETED", "DONE"].includes(status)) break;
-        if (Array.isArray(r.messages) && r.messages.length > 0) break;
-      }
-
-      // Response text lives at messages[].items[].content.text (BFF rich-content shape).
-      // Fall back to messages[].content for older shapes.
+      // Response text lives at messages[].items[].content.text (BFF rich-content
+      // shape); fall back to messages[].content for older shapes. Only the
+      // ASSISTANT's reply counts — the turn echoes the user's message first, so
+      // breaking on "any message present" returns before the coach has answered.
       function extractText(msgs: unknown[]): string | null {
         for (const m of msgs) {
           if (typeof m !== "object" || m === null) continue;
@@ -100,8 +88,32 @@ export function registerCoachAsk(server: McpServer, client: WhoopClient): void {
         }
         return null;
       }
-      const msgs = Array.isArray(lastResult.messages) ? lastResult.messages : [];
-      const responseText = extractText(msgs);
+
+      // The assistant reply streams token-by-token, so the FIRST non-empty read
+      // is almost always a partial chunk (e.g. just "56"). Breaking on first text
+      // returns a truncated answer. Instead keep the latest text each poll and
+      // stop only once the turn is terminal (server says it's done) or the text
+      // has stopped growing for two polls (the stream has settled). The 30s cap
+      // is the backstop.
+      const TERMINAL = ["COMPLETE", "COMPLETED", "DONE", "FINISHED"];
+      let polled = 0;
+      let status = "PENDING";
+      let responseText: string | null = null;
+      let stableFor = 0;
+      for (; polled < 30; polled++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const r = await client.get<Record<string, unknown>>(
+          `/ai-conversation-bff/v1/conversation/${conversationId}/turn/${turnId}`,
+        );
+        status = typeof r.turn_status === "string" ? r.turn_status.toUpperCase() : status;
+        const latest = extractText(Array.isArray(r.messages) ? r.messages : []);
+        if (latest !== null) {
+          stableFor = latest === responseText ? stableFor + 1 : 0;
+          responseText = latest;
+        }
+        if (TERMINAL.includes(status)) break; // server marked the turn done
+        if (responseText !== null && stableFor >= 2) break; // stream settled
+      }
       const out = CoachAskOut.parse({
         conversation_id: conversationId,
         turn_id: turnId,

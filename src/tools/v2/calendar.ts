@@ -10,7 +10,7 @@ import { todayIso } from "../../lib/dates.js";
 export function registerCalendar(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_calendar",
-    "Per-day recovery/sleep/strain scores for the month containing the given date.",
+    "Month-at-a-glance calendar grid for the month containing the given date: each day's recovery STATE — GREEN (high), YELLOW (medium), or RED (low). The grid only exposes the state, not numeric recovery/sleep/strain scores; for a specific day's numbers use whoop_day.",
     {
       date: z.iso.date().optional().describe("Any date in the target month. Defaults to today."),
     },

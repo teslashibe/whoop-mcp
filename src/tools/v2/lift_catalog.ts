@@ -8,7 +8,7 @@ import { markConsulted } from "../../whoop/session_state.js";
 export function registerLiftCatalog(server: McpServer, _client: unknown): void {
   server.tool(
     "whoop_lift_catalog",
-    "Browse the official 372-exercise catalog. Filterable by muscle, equipment, movement pattern, laterality, or substring on name.",
+    "Search the 372-exercise Strength Trainer catalog to get the exact exercise_id for whoop_lift_log, lift_exercise, or lift_progression. Filter by name substring, muscle, equipment, movement_pattern, or laterality (BILATERAL, LEFT, RIGHT, ALTERNATING), and read the id from the result.",
     {
       search: z.string().optional(),
       muscle: z.string().optional(),

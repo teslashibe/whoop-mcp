@@ -8,7 +8,7 @@ import { jsonOut } from "../../whoop/json_out.js";
 export function registerRaw(server: McpServer, client: WhoopClient): void {
   server.tool(
     "whoop_raw",
-    "ESCAPE HATCH: call any Whoop endpoint directly. Use only when no specific tool fits. Mutating methods require confirm:true. Look up paths via whoop_endpoints first.",
+    "ESCAPE HATCH: call any Whoop endpoint directly — use only when no specific tool fits, and look up the exact path with whoop_endpoints first. Mutating methods (POST/PUT/DELETE) require confirm:true.",
     {
       path: z.string(),
       method: z.enum(["GET", "POST", "PUT", "DELETE"]).default("GET"),
