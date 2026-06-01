@@ -4,6 +4,28 @@ All notable changes to this project. Format roughly follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [1.2.3] — 2026-05-31
+
+A security-hardening release — no API or tool changes, all behavior-compatible. Came out of a full codebase security audit.
+
+### Security
+
+- **Token files are now written `0600`** (owner-only) instead of inheriting a `0644` umask — `.env` and the token store, with a `chmod` repair so files from older versions get tightened on the next write.
+- **Your Whoop password is removed from `.env` after a successful login.** It was only ever needed for the one bootstrap call; every refresh uses the token. Re-running `auth` re-prompts for it (masked).
+- **OAuth JWTs are signed with a key derived from `MCP_AUTH_TOKEN`** (HMAC), not the token itself — the static bearer and the signing secret are no longer the same value in two roles.
+- **Access tokens are audience-bound** (RFC 8707): a token's `resource` claim must match this server's `/mcp` URL, so a token can't be replayed against another deployment that shares the secret.
+- **Security headers** on every HTTP response (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, strict CSP) — the connector password page can no longer be framed (clickjacking).
+- **The connector-password gate is harder to brute-force**: a global attempt ceiling independent of the spoofable per-IP key, plus a 16-char + character-class floor for user-chosen passwords (the auto-generated one was always strong).
+- **Fly secrets are pushed over stdin** (`secrets import`), not argv — token/password values are no longer visible in `ps`/`/proc` during deploy or token rotation.
+- **`whoop-mcp cloud` now verifies the auth gate after deploy** — it asserts an unauthenticated `/mcp` returns 401 before declaring success.
+- **`.gitignore` now excludes every `.env*` variant** (incl. backups) so a stray `.env.bak` can't be committed; `.dockerignore` excludes `.env*` + the deploy record so they're never uploaded to a build context.
+- Outbound requests use `redirect: "error"`, and API error messages no longer echo response-body fragments — defense-in-depth against token/data leakage.
+
+### Changed
+
+- **Reduced request burstiness** for stealth: the wide read fan-outs (`whoop_compare`, `whoop_lift_history`) are now paced (≤3 concurrent, small jitter) instead of firing all at once, and `whoop_coach_ask` polls on a jittered interval instead of a fixed 1.000 s metronome.
+- On read-only hosts the install identifier is derived deterministically from the account email (stable across restarts) instead of a fresh random one per process. A boot warning fires if the bundled iOS app version has gone stale.
+
 ## [1.2.2] — 2026-05-31
 
 ### Changed
