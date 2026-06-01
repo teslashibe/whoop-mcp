@@ -79,7 +79,7 @@ Deploys the server to a host and connects it to Claude on **web, desktop, and mo
 2. **Pick a host** — Fly (automated + tested), Railway, Google Cloud Run, or your own server (guided Docker steps).
 3. **Secrets** — generates `MCP_AUTH_TOKEN` and asks you to choose a connector password.
 4. **Deploy + verify** — sets env, deploys, confirms `/health` and the OAuth endpoints are live.
-5. **Connect** — opens claude.ai's connector page and prints the URL + password. Paste them into **Settings → Connectors → Add custom connector**, approve, and you're done.
+5. **Connect** — prints ready-to-paste setup for **claude.ai, ChatGPT, Claude Code (remote), and Cursor / Windsurf / any HTTP MCP client** (URL + password for the OAuth connectors, a bearer-token block for the rest), and opens claude.ai's connector page.
 
 ```bash
 whoop-mcp cloud
@@ -87,7 +87,7 @@ whoop-mcp cloud
 
 ### Local only — `whoop-mcp local`
 
-Runs the server on this machine over stdio — no hosting, this device only. Walks through Whoop login → build → writing your Claude Desktop config (or printing the Claude Code one-liner). Restart Claude and you're set.
+Runs the server on this machine over stdio — no hosting, this device only. Walks through Whoop login → build → wiring it into the client you pick: **Claude Desktop, Claude Code, Cursor, VS Code (Copilot), Gemini CLI, Codex CLI, or Windsurf** — it writes the right config to the right path automatically (or prints a universal block for any other MCP client). Restart the client and you're set.
 
 ```bash
 whoop-mcp local

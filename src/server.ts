@@ -74,7 +74,7 @@ async function main(): Promise<void> {
   }
 
   // stdio (default — local Claude Desktop / Claude Code)
-  const server = new McpServer({ name: "whoop", version: "1.2.4" });
+  const server = new McpServer({ name: "whoop", version: "1.3.0" });
   registerTools(server, client);
   await server.connect(new StdioServerTransport());
 }

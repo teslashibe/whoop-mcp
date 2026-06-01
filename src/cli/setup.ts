@@ -370,6 +370,119 @@ async function chooseRailwayAccount(): Promise<boolean> {
 }
 
 // ── LOCAL flow ───────────────────────────────────────────────────────────────
+// ── local AI-client wiring (registry-driven) ────────────────────────────────
+// Every stdio client takes the SAME launch entry — `{ command: <node>, args:
+// [dist/server.js] }` — because the server self-loads the repo's .env. So adding
+// a client is just a config path + a JSON key (or its own CLI); the entry never
+// changes, only WHERE it's written.
+interface LocalClient {
+  label: string;
+  hint: string;
+  /** Wire this client; true if we wrote/ran it, false if the user must finish it. */
+  wire: (node: string, serverJs: string) => Promise<boolean>;
+}
+
+// Merge { [key]: { [name]: entry } } into a JSON config without clobbering the
+// user's other servers/settings. Idempotent.
+function mergeJsonConfig(cfgPath: string, key: string, name: string, entry: Record<string, unknown>): void {
+  let merged: Record<string, unknown> = {};
+  if (existsSync(cfgPath)) {
+    try { merged = JSON.parse(readFileSync(cfgPath, "utf8")) as Record<string, unknown>; } catch { merged = {}; }
+  }
+  const bucket = (merged[key] as Record<string, unknown> | undefined) ?? {};
+  merged[key] = { ...bucket, [name]: entry };
+  mkdirSync(dirname(cfgPath), { recursive: true });
+  writeFileSync(cfgPath, JSON.stringify(merged, null, 2));
+}
+
+// A client wired by merging a JSON config file (most of them). `key` is the
+// top-level object: "mcpServers" for Claude Desktop/Cursor/Gemini/Windsurf,
+// "servers" (with a "type":"stdio" field) for VS Code.
+function jsonClient(label: string, hint: string, relPath: string, key: "mcpServers" | "servers", restart: string): LocalClient {
+  return {
+    label, hint,
+    wire: async (node, serverJs) => {
+      const home = process.env.HOME ?? "~";
+      const cfgPath = resolve(home, relPath);
+      const entry: Record<string, unknown> = key === "servers"
+        ? { type: "stdio", command: node, args: [serverJs] }
+        : { command: node, args: [serverJs] };
+      if (!(await promptYesNo(`Write the 'whoop' server into ${cfgPath}?`, true))) {
+        console.log(c.gray("  Skipped — paste this into that file yourself:"));
+        console.log(JSON.stringify({ [key]: { whoop: entry } }, null, 2));
+        return false;
+      }
+      mergeJsonConfig(cfgPath, key, "whoop", entry);
+      console.log(c.green(`  ✓ ${label} updated`) + c.gray(`  ${cfgPath}`));
+      console.log(c.yellow(`  → ${restart}`));
+      return true;
+    },
+  };
+}
+
+// Claude Code: wired by its own CLI.
+const claudeCodeClient: LocalClient = {
+  label: "Claude Code", hint: "run the one-line `claude mcp add`",
+  wire: async (node, serverJs) => {
+    const manual = `claude mcp add whoop ${node} ${serverJs}`;
+    if (commandExists("claude")) {
+      if (await promptYesNo("Run `claude mcp add whoop …` now?", true)) {
+        if ((await run("claude", ["mcp", "add", "whoop", node, serverJs])) === 0) {
+          console.log(c.green("  ✓ added to Claude Code"));
+          return true;
+        }
+        console.log(c.yellow("  That didn't work — run it yourself:"));
+        console.log(`  ${manual}`);
+        return false;
+      }
+      console.log(c.gray("  Run it when ready:"));
+      console.log(`  ${manual}`);
+      return false;
+    }
+    console.log(c.gray("  The `claude` CLI isn't on PATH. Install Claude Code, then run:"));
+    console.log(`  ${manual}`);
+    return false;
+  },
+};
+
+// Codex uses TOML — print the exact block (no fragile TOML merge/parse).
+const codexClient: LocalClient = {
+  label: "Codex CLI", hint: "show the config.toml block to add",
+  wire: async (node, serverJs) => {
+    const home = process.env.HOME ?? "~";
+    console.log("");
+    console.log(c.gray(`  Add this to ${resolve(home, ".codex/config.toml")} and restart Codex:`));
+    console.log("");
+    console.log(`  [mcp_servers.whoop]`);
+    console.log(`  command = ${JSON.stringify(node)}`);
+    console.log(`  args = ${JSON.stringify([serverJs])}`);
+    console.log("");
+    return false;
+  },
+};
+
+// Catch-all: print the universal stdio block for any other MCP client.
+const showConfigClient: LocalClient = {
+  label: "Other / show the config", hint: "any MCP client — print the block",
+  wire: async (node, serverJs) => {
+    console.log("");
+    console.log(c.gray('  Most MCP clients accept this (key is usually "mcpServers"; VS Code uses "servers" + "type":"stdio"):'));
+    console.log(JSON.stringify({ mcpServers: { whoop: { command: node, args: [serverJs] } } }, null, 2));
+    return false;
+  },
+};
+
+const LOCAL_CLIENTS: LocalClient[] = [
+  jsonClient("Claude Desktop", "write the config automatically", "Library/Application Support/Claude/claude_desktop_config.json", "mcpServers", "Quit and reopen Claude Desktop."),
+  claudeCodeClient,
+  jsonClient("Cursor", "write ~/.cursor/mcp.json", ".cursor/mcp.json", "mcpServers", "Reload Cursor (Settings → Tools & MCP)."),
+  jsonClient("VS Code (Copilot)", "write the user mcp.json", "Library/Application Support/Code/User/mcp.json", "servers", "Reload VS Code; start the server in the MCP view."),
+  jsonClient("Gemini CLI", "write ~/.gemini/settings.json", ".gemini/settings.json", "mcpServers", "Restart the gemini CLI."),
+  codexClient,
+  jsonClient("Windsurf", "write ~/.codeium/windsurf/mcp_config.json", ".codeium/windsurf/mcp_config.json", "mcpServers", "Reload Windsurf (Cascade → refresh MCP)."),
+  showConfigClient,
+];
+
 export async function runLocalSetup(root: string): Promise<number> {
   console.log(c.bold("\nwhoop-mcp · local setup") + c.gray(" — run the MCP on this machine over stdio\n"));
   const TOTAL = 3;
@@ -386,70 +499,13 @@ export async function runLocalSetup(root: string): Promise<number> {
   writeDeployRecord(root, { platform: "local" });
 
   step(3, TOTAL, "Wire into your AI client");
-  const client = await select("Which client?", [
-    { label: "Claude Desktop", hint: "write the config automatically" },
-    { label: "Claude Code", hint: "run/print the one-line command" },
-    { label: "Just show me the config", hint: "I'll paste it myself" },
-  ]);
-
-  let wired = false;
-  if (client === 1) {
-    console.log("");
-    const manual = `claude mcp add whoop ${process.execPath} ${serverJs}`;
-    if (commandExists("claude")) {
-      if (await promptYesNo("Run `claude mcp add whoop …` for you now?", true)) {
-        if (await run("claude", ["mcp", "add", "whoop", process.execPath, serverJs]) === 0) {
-          console.log(c.green("  ✓ added to Claude Code"));
-          wired = true;
-        } else {
-          console.log(c.yellow("  That didn't work — run it yourself:"));
-          console.log(`  ${manual}`);
-        }
-      } else {
-        console.log(c.gray("  Run it when ready:"));
-        console.log(`  ${manual}`);
-      }
-    } else {
-      console.log(c.gray("  The `claude` CLI isn't on PATH. Install Claude Code, then run:"));
-      console.log(`  ${manual}`);
-    }
-  } else if (client === 0) {
-    const home = process.env.HOME ?? "~";
-    const cfgPath = resolve(home, "Library/Application Support/Claude/claude_desktop_config.json");
-    const entry = { command: process.execPath, args: [serverJs] };
-    let merged: { mcpServers?: Record<string, unknown> } = {};
-    if (existsSync(cfgPath)) {
-      try { merged = JSON.parse(readFileSync(cfgPath, "utf8")); } catch { merged = {}; }
-    }
-    merged.mcpServers = { ...(merged.mcpServers ?? {}), whoop: entry };
-    if (await promptYesNo(`Write the 'whoop' server into ${cfgPath}?`, true)) {
-      // Create the parent dir if Claude Desktop has never been opened (its
-      // config dir won't exist yet) — otherwise writeFileSync throws ENOENT.
-      mkdirSync(dirname(cfgPath), { recursive: true });
-      writeFileSync(cfgPath, JSON.stringify(merged, null, 2));
-      console.log(c.green("  ✓ Claude Desktop config updated"));
-      console.log(c.yellow("  → Quit and reopen Claude Desktop to load it."));
-      wired = true;
-    }
-  } else {
-    const home = process.env.HOME ?? "~";
-    const cfgPath = resolve(home, "Library/Application Support/Claude/claude_desktop_config.json");
-    console.log("");
-    console.log(c.bold("  To finish, add this to Claude Desktop:"));
-    console.log(c.gray("  1. Open (create if missing):"));
-    console.log(`     ${cfgPath}`);
-    console.log(c.gray('  2. Merge the "whoop" block into your existing "mcpServers" — don\'t overwrite the file:'));
-    console.log("");
-    console.log(JSON.stringify({ mcpServers: { whoop: { command: process.execPath, args: [serverJs] } } }, null, 2));
-    console.log("");
-    console.log(c.gray("  3. Quit and reopen Claude Desktop."));
-    console.log(c.gray("  Using Claude Code instead? Run: ") + c.bold(`claude mcp add whoop ${process.execPath} ${serverJs}`));
-  }
+  const idx = await select("Which client?", LOCAL_CLIENTS.map((cl) => ({ label: cl.label, hint: cl.hint })));
+  const wired = await LOCAL_CLIENTS[idx]!.wire(process.execPath, serverJs);
 
   if (wired) {
-    console.log(c.green("\n✓ Local setup complete.") + c.gray(" Quit/reopen the client, then ask: \"how am I doing today on whoop?\"\n"));
+    console.log(c.green("\n✓ Local setup complete.") + c.gray(" Restart the client, then ask: \"how am I doing today on whoop?\"\n"));
   } else {
-    console.log(c.yellow("\n→ Almost done.") + c.gray(" Finish the step above (paste the config or run the command) + restart your client, then ask: \"how am I doing today on whoop?\"\n"));
+    console.log(c.yellow("\n→ Almost done.") + c.gray(" Finish the step above + restart your client, then ask: \"how am I doing today on whoop?\"\n"));
   }
   closePrompts();
   return 0;
@@ -572,8 +628,8 @@ export async function runCloudSetup(root: string): Promise<number> {
   }
   writeDeployRecord(root, { platform, app: ctx.appName, url, ...extra });
 
-  step(6, TOTAL, "Connect to Claude");
-  printConnectInstructions(url, password);
+  step(6, TOTAL, "Connect your AI");
+  printConnectInstructions(url, password, mcpToken);
   closePrompts();
   return 0;
 }
@@ -608,18 +664,33 @@ async function verifyDeployment(baseUrl: string): Promise<boolean> {
   return healthy && prmOk && gated;
 }
 
-function printConnectInstructions(url: string, password: string): void {
+function printConnectInstructions(url: string, password: string, mcpToken: string): void {
   const mcpUrl = url.replace(/\/$/, "") + "/mcp";
+  // Header-auth clients (CLIs / editors) hit the server directly with the static
+  // bearer token; OAuth clients (claude.ai, ChatGPT) use the password gate.
+  const headerBlock = JSON.stringify(
+    { mcpServers: { whoop: { url: mcpUrl, headers: { Authorization: `Bearer ${mcpToken}` } } } },
+    null, 2,
+  ).split("\n").map((l) => "    " + l).join("\n");
   console.log("");
-  console.log(c.bold("  Add it to Claude (syncs across web, desktop, and mobile):"));
-  console.log(`  1. Open ${c.cyan("claude.ai")} → Settings → Connectors → ${c.bold("Add custom connector")}`);
-  console.log(`  2. URL:      ${c.brand(mcpUrl)}`);
-  console.log(`  3. Password: ${c.brand(password)}`);
-  console.log(`  4. Approve. Done — every device on your account now has Whoop.`);
+  console.log(c.bold("  ── Connect your AI ──────────────────────────────────────────"));
+  console.log("");
+  console.log(c.bold("  claude.ai") + c.gray("  (web · desktop · mobile — syncs across your devices)"));
+  console.log(`    Settings → Connectors → ${c.bold("Add custom connector")}`);
+  console.log(`    URL: ${c.brand(mcpUrl)}    Password: ${c.brand(password)}`);
+  console.log("");
+  console.log(c.bold("  ChatGPT") + c.gray("  (desktop)"));
+  console.log(`    Settings → Connectors → ${c.bold("Add")}  ·  URL: ${c.brand(mcpUrl)}    Password: ${c.brand(password)}`);
+  console.log("");
+  console.log(c.bold("  Claude Code") + c.gray("  (remote)"));
+  console.log(`    ${c.gray("$")} claude mcp add --transport http whoop ${mcpUrl} --header "Authorization: Bearer ${mcpToken}"`);
+  console.log("");
+  console.log(c.bold("  Cursor · Windsurf · any HTTP MCP client") + c.gray("  — config block:"));
+  console.log(headerBlock);
   console.log("");
   // Best-effort: open the connectors page in the browser (cross-platform).
   openUrl("https://claude.ai/settings/connectors");
-  console.log(c.gray("  (tried to open the connectors page in your browser)"));
+  console.log(c.gray("  (opened the claude.ai connectors page in your browser)"));
   console.log(c.green("\n✓ Cloud setup complete.\n"));
 }
 

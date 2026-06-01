@@ -107,12 +107,12 @@ const commands: Record<string, Cmd> = {
   // ── Get started (headline) ─────────────────────────────────────────────
   cloud: {
     group: "Get started",
-    desc: "★ Recommended. Guided deploy to a host (Fly/Railway/Cloud Run/custom) + connect to Claude web/mobile via OAuth, in one command.",
+    desc: "★ Recommended. Guided deploy to a host (Fly/Railway/Cloud Run/custom) + connect claude.ai, ChatGPT, Claude Code, or any HTTP MCP client, in one command.",
     run: async () => runCloudSetup(ROOT),
   },
   local: {
     group: "Get started",
-    desc: "Guided setup to run the MCP on this machine (stdio) and wire it into Claude Desktop / Claude Code.",
+    desc: "Guided setup to run the MCP on this machine (stdio) and wire it into Claude Desktop/Code, Cursor, VS Code, Gemini CLI, Codex, or Windsurf.",
     run: async () => runLocalSetup(ROOT),
   },
 

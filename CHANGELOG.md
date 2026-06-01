@@ -4,6 +4,12 @@ All notable changes to this project. Format roughly follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-06-01
+
+### Added
+
+- **Direct setup for the major AI clients, in both flows.** `whoop-mcp local` now wires the server into your pick of **Claude Desktop, Claude Code, Cursor, VS Code (Copilot), Gemini CLI, Codex CLI, or Windsurf** — writing the right config to the right path automatically (or printing a universal block for any other MCP client). `whoop-mcp cloud`'s connect step prints ready-to-paste instructions for **claude.ai, ChatGPT, Claude Code (remote), and Cursor/Windsurf/any HTTP MCP client** — URL + password for the OAuth clients, a bearer-token config block for the header-auth ones. Every stdio client uses the identical launch entry, so the server still self-loads its `.env` no matter which app starts it.
+
 ## [1.2.4] — 2026-06-01
 
 Bug-fix release for a remote-connector regression introduced in 1.2.3. stdio / Claude Code connections were unaffected.
