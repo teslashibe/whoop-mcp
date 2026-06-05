@@ -16,7 +16,7 @@
 //   PUBLIC_URL=https://...    (optional; the server's public origin, used as the
 //                              OAuth issuer. Defaults to http://localhost:<port>)
 import express, { type Request, type Response } from "express";
-import { randomUUID, createHmac } from "node:crypto";
+import { randomUUID, createHmac, timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -225,6 +225,28 @@ export async function startHttpServer(client: WhoopClient, opts: HttpServerOptio
   app.post("/mcp", bearer, express.json(), (req, res) => void mcpHandler(req, res));
   app.get("/mcp", bearer, (req, res) => void mcpHandler(req, res));
   app.delete("/mcp", bearer, (req, res) => void mcpHandler(req, res));
+
+  // Path-token auth: /mcp/t/<MCP_AUTH_TOKEN>. The Anthropic managed-agent URL
+  // MCP client cannot send an Authorization header, so for the smore per-user
+  // integration the static token rides in the path instead (same trick as
+  // smore's built-in transport). Constant-time compared against MCP_AUTH_TOKEN;
+  // every per-user instance has its own token + NetworkPolicy. See
+  // teslashibe/smore#146.
+  const pathToken = (req: Request, res: Response, next: () => void): void => {
+    const got = String(req.params.token ?? "");
+    const want = opts.authToken;
+    const ok =
+      got.length === want.length &&
+      timingSafeEqual(Buffer.from(got), Buffer.from(want));
+    if (!ok) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+    next();
+  };
+  app.post("/mcp/t/:token", pathToken, express.json(), (req, res) => void mcpHandler(req, res));
+  app.get("/mcp/t/:token", pathToken, (req, res) => void mcpHandler(req, res));
+  app.delete("/mcp/t/:token", pathToken, (req, res) => void mcpHandler(req, res));
 
   const httpServer = app.listen(port, host, () => {
     console.error(`[whoop-mcp] listening on ${publicUrl} (bound ${host}:${port})`);
