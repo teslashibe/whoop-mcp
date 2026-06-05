@@ -50,4 +50,7 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD wget -qO- http://127.0.0.1:3000/health || exit 1
 
+# Default entrypoint: the MCP data server. The smore integration runs the SAME
+# image with `command: ["node","dist/auth-server.js"]` for the stateless
+# whoop-auth service (per-user Cognito bootstrap). See teslashibe/smore#146.
 CMD ["node", "dist/server.js"]

@@ -129,6 +129,69 @@ export async function bootstrapCognito(input: BootstrapInput): Promise<CognitoTo
   throw new Error(`Unexpected challenge from Cognito: ${init.ChallengeName ?? "<none>"}`);
 }
 
+// --- Stateless two-step primitives (for the HTTP auth-server) ---
+//
+// bootstrapCognito() bundles InitiateAuth + the MFA challenge behind an
+// interactive mfaPrompt callback, which only works for a CLI. A stateless
+// HTTP service can't block on a prompt: it must return the Cognito Session to
+// the caller and accept the SMS code on a second request. These two exported
+// primitives expose exactly that split without duplicating callCognito.
+
+export interface InitiateResult {
+  /** Set when the account has no MFA — tokens are returned immediately. */
+  tokens?: CognitoTokens;
+  /** Set when an MFA challenge fired; echo session+challengeName to respond. */
+  mfaRequired?: boolean;
+  challengeName?: string;
+  session?: string;
+}
+
+/** Step 1: exchange email+password. Returns tokens, or an MFA challenge. */
+export async function initiateAuth(email: string, password: string): Promise<InitiateResult> {
+  const init = await callCognito("InitiateAuth", {
+    AuthFlow: "USER_PASSWORD_AUTH",
+    AuthParameters: { USERNAME: email, PASSWORD: password },
+    ClientId: "",
+  });
+  if (init.AuthenticationResult) {
+    return { tokens: tokensFromAuth(init.AuthenticationResult) };
+  }
+  if (
+    init.ChallengeName === "SMS_MFA" ||
+    init.ChallengeName === "SOFTWARE_TOKEN_MFA" ||
+    init.ChallengeName === "EMAIL_OTP"
+  ) {
+    if (!init.Session) throw new Error("Cognito MFA challenge missing Session token");
+    return { mfaRequired: true, challengeName: init.ChallengeName, session: init.Session };
+  }
+  throw new Error(`Unexpected challenge from Cognito: ${init.ChallengeName ?? "<none>"}`);
+}
+
+/** Step 2: complete an MFA challenge with the one-time code. */
+export async function respondToMfa(
+  email: string,
+  challengeName: string,
+  session: string,
+  code: string,
+): Promise<CognitoTokens> {
+  const field =
+    challengeName === "SMS_MFA"
+      ? "SMS_MFA_CODE"
+      : challengeName === "SOFTWARE_TOKEN_MFA"
+        ? "SOFTWARE_TOKEN_MFA_CODE"
+        : "EMAIL_OTP_CODE";
+  const resp = await callCognito("RespondToAuthChallenge", {
+    ClientId: "",
+    ChallengeName: challengeName,
+    Session: session,
+    ChallengeResponses: { USERNAME: email, [field]: code.trim() },
+  });
+  if (!resp.AuthenticationResult) {
+    throw new Error(`MFA verification did not return tokens: ${JSON.stringify(resp)}`);
+  }
+  return tokensFromAuth(resp.AuthenticationResult);
+}
+
 /**
  * Use the long-lived refresh token to mint a fresh access token.
  * No MFA needed — refresh tokens are pre-authenticated.
